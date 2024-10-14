@@ -51,11 +51,14 @@ type PlanRequest struct {
 	WorldState         *frame.WorldState
 	BoundingRegions    []spatialmath.Geometry
 	Constraints        *Constraints
+	GoalThreshold      float64
 	Options            map[string]interface{}
 }
 
 // validatePlanRequest ensures PlanRequests are not malformed.
 func (req *PlanRequest) validatePlanRequest() error {
+	fmt.Println("WE ARE INSIDE VALIDATE PLAN REQUEST")
+	fmt.Println("req.GoalThreshold: ", req.GoalThreshold)
 	if req == nil {
 		return errors.New("PlanRequest cannot be nil")
 	}
@@ -108,14 +111,8 @@ func (req *PlanRequest) validatePlanRequest() error {
 		}
 	}
 
-	_, ok := req.Options["planDeviationMM"].(float64)
-	if !ok {
-		req.Logger.Info("no planDeviationMM value was provided so we will use the default value of 1e-4")
-		if req.Options == nil {
-			req.Options = map[string]interface{}{"planDeviationMM": 1e-4}
-		} else {
-			req.Options["planDeviationMM"] = 1e-4
-		}
+	if req.GoalThreshold == 0 {
+		req.GoalThreshold = 0.1
 	}
 
 	frameDOF := len(req.Frame.DoF())
