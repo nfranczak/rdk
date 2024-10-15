@@ -905,7 +905,16 @@ func (pm *planManager) planRelativeWaypoint(ctx context.Context, request *PlanRe
 		return nil, err
 	}
 
-	opt.GoalThreshold = request.GoalThreshold
+	if opt.profile == PositionOnlyMotionProfile {
+		opt.AtGoalMetric = func(startPose, goalPose spatialmath.Pose) bool {
+			return spatialmath.PoseAlmostCoincidentEps(startPose, goalPose, request.GoalThreshold)
+		}
+	} else {
+		opt.AtGoalMetric = func(startPose, goalPose spatialmath.Pose) bool {
+			return spatialmath.OrientationAlmostEqual(goalPose.Orientation(), startPose.Orientation()) &&
+				spatialmath.PoseAlmostCoincidentEps(goalPose, startPose, request.GoalThreshold)
+		}
+	}
 
 	// re-root the frame system on the relative frame
 	relativeOnlyFS, err := pm.frame.fss.FrameSystemSubset(request.Frame)

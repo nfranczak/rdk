@@ -266,18 +266,18 @@ func (mp *tpSpaceRRTMotionPlanner) rrtBackgroundRunner(
 			// However for the purposes of this we can just take the first one we see.
 			if k.Pose() != nil {
 				dist := mp.planOpts.DistanceFunc(&ik.Segment{StartPosition: startPose, EndPosition: k.Pose()})
-				// Check to see if the startPose is already within some predefined delta of the goalPose
-				if dist <= mp.planOpts.GoalThreshold {
-					path := extractTPspacePath(rrt.maps.startMap, rrt.maps.goalMap, &nodePair{a: k, b: k})
-					publishFinishedPath(path)
-					return
-				}
 				if dist < goalScore {
 					// Update to use the closest goal to the start.
 					// This is necessary in order to solve deterministically.
 					goalPose = k.Pose()
 					goalScore = dist
 					goalNode = k
+				}
+				// Check to see if the startPose is already within some predefined delta of the goalPose
+				if mp.planOpts.AtGoalMetric(startPose, k.Pose()) {
+					path := extractTPspacePath(rrt.maps.startMap, rrt.maps.goalMap, &nodePair{a: k, b: k})
+					publishFinishedPath(path)
+					return
 				}
 			} else {
 				rrt.solutionChan <- &rrtSolution{err: fmt.Errorf("node %v must provide a Pose", k)}
