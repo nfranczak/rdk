@@ -500,7 +500,7 @@ func newWithResources(
 		return nil, err
 	}
 	if err := r.manager.resources.AddNode(
-		framesystem.InternalServiceName,
+		framesystem.ServiceName,
 		resource.NewConfiguredGraphNode(resource.Config{}, r.frameSvc, builtinModel)); err != nil {
 		return nil, err
 	}
@@ -786,7 +786,7 @@ func (r *localRobot) updateWeakDependents(ctx context.Context) {
 		defer timeoutCancel()
 
 		cleanup := utils.SlowStartupLogger(
-			ctx, "Waiting for internal resource to complete reconfiguration during weak dependencies update", "resource", resName.String(), r.logger)
+			ctx, "Waiting for internal or framesystem resource to complete reconfiguration during weak dependencies update", "resource", resName.String(), r.logger)
 		defer cleanup()
 
 		r.reconfigureWorkers.Add(1)
@@ -800,14 +800,14 @@ func (r *localRobot) updateWeakDependents(ctx context.Context) {
 				if err := res.Reconfigure(ctxWithTimeout, allResources, resource.Config{}); err != nil {
 					r.Logger().CErrorw(ctx, "failed to reconfigure internal service during weak dependencies update", "service", resName, "error", err)
 				}
-			case framesystem.InternalServiceName:
+			case framesystem.ServiceName:
 				fsCfg, err := r.FrameSystemConfig(ctxWithTimeout)
 				if err != nil {
-					r.Logger().CErrorw(ctx, "failed to reconfigure internal service during weak dependencies update", "service", resName, "error", err)
+					r.Logger().CErrorw(ctx, "failed to reconfigure framesystem service during weak dependencies update", "service", resName, "error", err)
 					break
 				}
 				if err := res.Reconfigure(ctxWithTimeout, components, resource.Config{ConvertedAttributes: fsCfg}); err != nil {
-					r.Logger().CErrorw(ctx, "failed to reconfigure internal service during weak dependencies update", "service", resName, "error", err)
+					r.Logger().CErrorw(ctx, "failed to reconfigure framesystem service during weak dependencies update", "service", resName, "error", err)
 				}
 			case packages.InternalServiceName, packages.DeferredServiceName, icloud.InternalServiceName:
 			default:

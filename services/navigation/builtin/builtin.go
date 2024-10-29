@@ -201,7 +201,7 @@ func (conf *Config) Validate(path string) ([]string, error) {
 	}
 
 	// add framesystem service as dependency to be used by builtin and explore motion service
-	deps = append(deps, framesystem.InternalServiceName.String())
+	deps = append(deps, framesystem.ServiceName.String())
 
 	return deps, nil
 }
@@ -257,7 +257,7 @@ func (svc *builtIn) Reconfigure(ctx context.Context, deps resource.Dependencies,
 
 	// Set framesystem service
 	for name, dep := range deps {
-		if name == framesystem.InternalServiceName {
+		if name == framesystem.ServiceName {
 			fsService, ok := dep.(framesystem.Service)
 			if !ok {
 				return errors.New("frame system service is invalid type")

@@ -21,14 +21,14 @@ import (
 // LocalFrameSystemName is the default name of the frame system created by the service.
 const LocalFrameSystemName = "robot"
 
-// SubtypeName is a constant that identifies the internal frame system resource subtype string.
+// SubtypeName is a constant that identifies the frame system resource subtype string.
 const SubtypeName = "frame_system"
 
-// API is the fully qualified API for the internal frame system service.
-var API = resource.APINamespaceRDKInternal.WithServiceType(SubtypeName)
+// API is the fully qualified API for the frame system service.
+var API = resource.APINamespaceRDK.WithServiceType(SubtypeName)
 
-// InternalServiceName is used to refer to/depend on this service internally.
-var InternalServiceName = resource.NewName(API, "builtin")
+// ServiceName is used to refer to/depend on this service.
+var ServiceName = resource.NewName(API, "builtin")
 
 // InputEnabled is a standard interface for all things that interact with the frame system
 // This allows us to figure out where they currently are, and then move them.
@@ -89,13 +89,13 @@ type Service interface {
 
 // FromDependencies is a helper for getting the framesystem from a collection of dependencies.
 func FromDependencies(deps resource.Dependencies) (Service, error) {
-	return resource.FromDependencies[Service](deps, InternalServiceName)
+	return resource.FromDependencies[Service](deps, ServiceName)
 }
 
 // New returns a new frame system service for the given robot.
 func New(ctx context.Context, deps resource.Dependencies, logger logging.Logger) (Service, error) {
 	fs := &frameSystemService{
-		Named:      InternalServiceName.AsNamed(),
+		Named:      ServiceName.AsNamed(),
 		components: make(map[string]resource.Resource),
 		logger:     logger,
 	}
@@ -105,13 +105,13 @@ func New(ctx context.Context, deps resource.Dependencies, logger logging.Logger)
 	return fs, nil
 }
 
-var internalFrameSystemServiceName = resource.NewName(
-	resource.APINamespaceRDKInternal.WithServiceType("framesystem"),
+var frameSystemServiceName = resource.NewName(
+	resource.APINamespaceRDK.WithServiceType("framesystem"),
 	"builtin",
 )
 
 func (svc *frameSystemService) Name() resource.Name {
-	return internalFrameSystemServiceName
+	return frameSystemServiceName
 }
 
 // Config is a slice of *config.FrameSystemPart.
