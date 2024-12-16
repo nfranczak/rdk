@@ -2,6 +2,7 @@
 package builtin
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sync"
@@ -13,11 +14,13 @@ import (
 	"github.com/pkg/errors"
 	pb "go.viam.com/api/service/motion/v1"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"go.viam.com/rdk/components/movementsensor"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/motionplan"
 	"go.viam.com/rdk/operation"
+	"go.viam.com/rdk/pointcloud"
 	"go.viam.com/rdk/referenceframe"
 	"go.viam.com/rdk/resource"
 	"go.viam.com/rdk/robot/framesystem"
@@ -360,10 +363,45 @@ func (ms *builtIn) DoCommand(ctx context.Context, cmd map[string]interface{}) (m
 		if err != nil {
 			return nil, err
 		}
+		fields := moveReqProto.Extra.AsMap()
+		if extra, err := utils.AssertType[map[string]interface{}](fields["fields"]); err == nil {
+			v, err := structpb.NewStruct(extra)
+			if err != nil {
+				return nil, err
+			}
+			moveReqProto.Extra = v
+		}
 		moveReq, err := motion.MoveReqFromProto(&moveReqProto)
 		if err != nil {
 			return nil, err
 		}
+
+		// get the pointcloud bytes from Extras and convert back into a pointcloud
+		pcdSlice, err := utils.AssertType[[]interface{}](moveReq.Extra["pcd"])
+		if err != nil {
+			return nil, err
+		}
+		uInt8Slice := []uint8{}
+		for _, v := range pcdSlice {
+			data, err := utils.AssertType[float64](v)
+			if err != nil {
+				return nil, err
+			}
+			uInt8Slice = append(uInt8Slice, uint8(data))
+		}
+
+		data, err := utils.AssertType[[]byte](uInt8Slice)
+		if err != nil {
+			return nil, err
+		}
+
+		pc, err := pointcloud.ReadPCD(bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		// _ = pc
+		fmt.Println("pc: ", pc)
+
 		plan, err := ms.plan(ctx, moveReq)
 		if err != nil {
 			return nil, err
