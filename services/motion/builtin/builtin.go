@@ -2,6 +2,7 @@
 package builtin
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"reflect"
@@ -22,6 +23,7 @@ import (
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/motionplan"
 	"go.viam.com/rdk/operation"
+	"go.viam.com/rdk/pointcloud"
 	"go.viam.com/rdk/referenceframe"
 	"go.viam.com/rdk/resource"
 	"go.viam.com/rdk/robot/framesystem"
@@ -377,72 +379,31 @@ func (ms *builtIn) DoCommand(ctx context.Context, cmd map[string]interface{}) (m
 		if err != nil {
 			return nil, err
 		}
-		fmt.Println(moveReq.Extra)
 
-		// ---------
-		pcdMap, _ := moveReq.Extra["pcd"].([]int)
-		fmt.Println(pcdMap)
+		// get the pointcloud bytes from Extras and convert back into a pointcloud
+		pcdSlice, err := utils.AssertType[[]interface{}](moveReq.Extra["pcd"])
+		if err != nil {
+			return nil, err
+		}
+		uInt8Slice := []uint8{}
+		for _, v := range pcdSlice {
+			data, err := utils.AssertType[float64](v)
+			if err != nil {
+				return nil, err
+			}
+			uInt8Slice = append(uInt8Slice, uint8(data))
+		}
 
-		// -----
-		// pcMap, _ := moveReq.Extra["pointcloud"].(map[string]interface{})
-		// extraAsBytes, err := json.Marshal(pcMap)
-		// if err != nil {
-		// 	return nil, err
-		// }
+		data, err := utils.AssertType[[]byte](uInt8Slice)
+		if err != nil {
+			return nil, err
+		}
 
-		// var camProto camerapb.GetPointCloudRequest
-		// err = json.Unmarshal(extraAsBytes, &camProto)
-		// if err != nil {
-		// 	fmt.Println("RETURNING ERROR HERE")
-		// 	return nil, err
-		// }
-		// this only prints the mime type and not the pointcloud bytes as well
-		// fmt.Println("camProto: ", &camProto)
-		// -----
-
-		// -----
-		// pcMap, _ := moveReq.Extra["pointcloud"].(map[string]interface{})
-		// // fmt.Println("pcMap: ", pcMap)
-		// // for k, _ := range pcMap {
-		// // 	fmt.Println("k: ", k)
-		// // }
-		// pcData, ok := pcMap["point_cloud"]
-		// if !ok {
-		// 	return nil, errors.New("could not get point_cloud")
-		// }
-		// fmt.Println("pcData: ", pcData)
-
-		// // Type assertion and conversion to []byte
-		// switch v := pcData.(type) {
-		// case string:
-		// 	b := []byte(v)
-		// 	fmt.Println(b) // If pcData is a string, it prints its byte representation
-		// case []byte:
-		// 	fmt.Println(v) // If pcData is already a []byte, it directly prints
-		// case int:
-		// 	b := []byte(fmt.Sprintf("%d", v)) // Convert int to string, then to []byte
-		// 	fmt.Println(b)
-		// default:
-		// 	fmt.Println("Unsupported type:", v)
-		// }
-
-		// pcDataStringSlice, ok := pcData.([]string)
-		// if !ok {
-		// 	return nil, errors.New("can't convert it to []string")
-		// }
-		// fmt.Println("pcDataStringSlice: ", pcDataStringSlice)
-
-		// pcDataBytes, err := json.Marshal(pcData)
-		// if err != nil {
-		// 	return nil, err
-		// }
-		// fmt.Println("pcDataBytes: ", pcDataBytes)
-		// pc, err := pointcloud.ReadPCD(bytes.NewReader(pcDataBytes))
-		// if err != nil {
-		// 	return nil, err
-		// }
-		// fmt.Println("pc: ", pc)
-		// -----
+		pc, err := pointcloud.ReadPCD(bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		fmt.Println("pc: ", pc)
 
 		plan, err := ms.plan(ctx, moveReq)
 		if err != nil {

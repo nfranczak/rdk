@@ -1256,6 +1256,7 @@ func TestDoCommand(t *testing.T) {
 	logger := logging.NewTestLogger(t)
 	cloud, err := pointcloud.NewFromFile(artifact.MustPath("pointcloud/test.las"), logger)
 	test.That(t, err, test.ShouldBeNil)
+	fmt.Println("cloud: ", cloud)
 	pcBytes, err := pointcloud.ToBytes(cloud)
 	test.That(t, err, test.ShouldBeNil)
 
