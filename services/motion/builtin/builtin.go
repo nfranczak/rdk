@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/structpb"
 
+	"go.viam.com/rdk/components/arm"
 	"go.viam.com/rdk/components/movementsensor"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/motionplan"
@@ -401,6 +402,59 @@ func (ms *builtIn) DoCommand(ctx context.Context, cmd map[string]interface{}) (m
 		}
 		// _ = pc
 		fmt.Println("pc: ", pc)
+
+		// get the transformBy pose from extras
+		vectorMap := moveReq.Extra["tfVec"].(map[string]interface{})
+		vec := r3.Vector{X: vectorMap["X"].(float64), Y: vectorMap["Y"].(float64), Z: vectorMap["Z"].(float64)}
+
+		ovMap := moveReq.Extra["tfOrientation"].(map[string]interface{})
+		quatOrientation := spatialmath.Quaternion{
+			Imag: ovMap["Imag"].(float64),
+			Jmag: ovMap["Jmag"].(float64),
+			Kmag: ovMap["Kmag"].(float64),
+			Real: ovMap["Real"].(float64),
+		}
+		ov := spatialmath.QuatToOV(quatOrientation.Quaternion())
+
+		tfPose := spatialmath.NewPose(vec, ov)
+		fmt.Println("tf: ", spatialmath.PoseToProtobuf(tfPose))
+
+		// transform the octree and add it to the worldstate
+		octree, err := pointcloud.ToBasicOctree(pc)
+		if err != nil {
+			return nil, err
+		}
+		transformedOctree := octree.Transform(tfPose)
+		transformedOctree.SetLabel("glass")
+
+		fs, err := ms.fsService.FrameSystem(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		startPositions := referenceframe.StartPositions(fs)
+
+		armComponent := ms.components[arm.Named("arm")].(arm.Arm)
+		armInputs, err := armComponent.CurrentInputs(ctx)
+		if err != nil {
+			return nil, err
+		}
+		startPositions[armComponent.Name().Name] = armInputs
+
+		gifs, err := moveReq.WorldState.ObstaclesInWorldFrame(fs, startPositions)
+		if err != nil {
+			return nil, err
+		}
+		allGifs := []*referenceframe.GeometriesInFrame{
+			// gifs, referenceframe.NewGeometriesInFrame("glass", []spatialmath.Geometry{transformedOctree}),
+			gifs, referenceframe.NewGeometriesInFrame(referenceframe.World, []spatialmath.Geometry{transformedOctree}),
+		}
+		newWrld, err := referenceframe.NewWorldState(allGifs, moveReq.WorldState.Transforms())
+		if err != nil {
+			return nil, err
+		}
+		moveReq.WorldState = newWrld
+		fmt.Println("moveReq.WorldState(): ", moveReq.WorldState.String())
+		moveReq.Extra = nil
 
 		plan, err := ms.plan(ctx, moveReq)
 		if err != nil {

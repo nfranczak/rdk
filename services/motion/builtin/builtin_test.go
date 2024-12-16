@@ -1263,11 +1263,17 @@ func TestDoCommand(t *testing.T) {
 	test.That(t, err, test.ShouldBeNil)
 	pcBytes, err := pointcloud.ToBytes(cloud)
 
+	tfPose := spatialmath.NewPose(r3.Vector{X: 1, Y: 2, Z: 3}, &spatialmath.OrientationVectorDegrees{OX: 1, OY: 0, OZ: 0, Theta: -90})
+
 	moveReq := motion.MoveReq{
 		ComponentName: gripper.Named("pieceGripper"),
 		WorldState:    worldState,
 		Destination:   referenceframe.NewPoseInFrame("c", spatialmath.NewPoseFromPoint(r3.Vector{X: 0, Y: -30, Z: -50})),
-		Extra:         map[string]interface{}{"pcd": pcBytes},
+		Extra: map[string]interface{}{
+			"pcd":           pcBytes,
+			"tfVec":         tfPose.Point(),
+			"tfOrientation": tfPose.Orientation(),
+		},
 	}
 
 	// need to simulate what happens when the DoCommand message is serialized/deserialized into proto
@@ -1298,6 +1304,7 @@ func TestDoCommand(t *testing.T) {
 
 		// the client will need to decode the response still
 		var trajectory motionplan.Trajectory
+		fmt.Println("resp: ", resp)
 		err = mapstructure.Decode(resp, &trajectory)
 		test.That(t, err, test.ShouldBeNil)
 		test.That(t, len(trajectory), test.ShouldEqual, 2)
