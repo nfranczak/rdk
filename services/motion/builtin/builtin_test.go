@@ -16,6 +16,7 @@ import (
 	"go.viam.com/test"
 	"go.viam.com/utils/artifact"
 	"go.viam.com/utils/protoutils"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	// "go.viam.com/utils/web/protojson"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -1269,6 +1270,7 @@ func TestDoCommand(t *testing.T) {
 
 	moveReq := motion.MoveReq{
 		ComponentName: gripper.Named("pieceGripper"),
+		WorldState:    worldState,
 		Destination:   referenceframe.NewPoseInFrame("c", spatialmath.NewPoseFromPoint(r3.Vector{X: 0, Y: -30, Z: -50})),
 		WorldState:    worldState,
 		Extra:         map[string]interface{}{"pcd": pcBytes},
