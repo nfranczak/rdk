@@ -201,6 +201,7 @@ func (s *serviceServer) GetPointCloud(
 		return nil, err
 	}
 
+	// construct helper to handle the conversion
 	var buf bytes.Buffer
 	buf.Grow(200 + (pc.Size() * 4 * 4)) // 4 numbers per point, each 4 bytes
 	_, pcdSpan := trace.StartSpan(ctx, "camera::server::NextPointCloud::ToPCD")
@@ -214,6 +215,7 @@ func (s *serviceServer) GetPointCloud(
 		MimeType:   utils.MimeTypePCD,
 		PointCloud: buf.Bytes(),
 	}, nil
+	// helper ends here
 }
 
 func (s *serviceServer) GetProperties(

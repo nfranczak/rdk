@@ -14,7 +14,11 @@ import (
 	"github.com/pkg/errors"
 	commonpb "go.viam.com/api/common/v1"
 	"go.viam.com/test"
+	"go.viam.com/utils/artifact"
 	"go.viam.com/utils/protoutils"
+
+	// "go.viam.com/utils/web/protojson"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	"go.viam.com/rdk/components/arm"
 	armFake "go.viam.com/rdk/components/arm/fake"
@@ -38,6 +42,7 @@ import (
 	"go.viam.com/rdk/spatialmath"
 	"go.viam.com/rdk/testutils/inject"
 	viz "go.viam.com/rdk/vision"
+	// "google.golang.org/protobuf/encoding/protojson"
 )
 
 func setupMotionServiceFromConfig(t *testing.T, configFilename string) (motion.Service, func()) {
@@ -1246,9 +1251,26 @@ func TestCheckPlan(t *testing.T) {
 
 func TestDoCommand(t *testing.T) {
 	ctx := context.Background()
+
+	// construct pointcloud data
+	logger := logging.NewTestLogger(t)
+	cloud, err := pointcloud.NewFromFile(artifact.MustPath("pointcloud/test.las"), logger)
+	test.That(t, err, test.ShouldBeNil)
+	pcBytes, err := pointcloud.ToBytes(cloud)
+	test.That(t, err, test.ShouldBeNil)
+
+	// construct a worldstate
+	box, err := spatialmath.NewBox(spatialmath.NewPoseFromPoint(r3.Vector{1000, 1000, 1000}), r3.Vector{1, 1, 1}, "box")
+	test.That(t, err, test.ShouldBeNil)
+	geometries := []*referenceframe.GeometriesInFrame{referenceframe.NewGeometriesInFrame("world", []spatialmath.Geometry{box})}
+	worldState, err := referenceframe.NewWorldState(geometries, nil)
+	test.That(t, err, test.ShouldBeNil)
+
 	moveReq := motion.MoveReq{
 		ComponentName: gripper.Named("pieceGripper"),
 		Destination:   referenceframe.NewPoseInFrame("c", spatialmath.NewPoseFromPoint(r3.Vector{X: 0, Y: -30, Z: -50})),
+		WorldState:    worldState,
+		Extra:         map[string]interface{}{"pcd": pcBytes},
 	}
 
 	// need to simulate what happens when the DoCommand message is serialized/deserialized into proto
@@ -1269,7 +1291,9 @@ func TestDoCommand(t *testing.T) {
 		// format the command to send DoCommand
 		proto, err := moveReq.ToProto(ms.Name().Name)
 		test.That(t, err, test.ShouldBeNil)
-		cmd := map[string]interface{}{DoPlan: proto}
+		bytes, err := protojson.Marshal(proto)
+		test.That(t, err, test.ShouldBeNil)
+		cmd := map[string]interface{}{DoPlan: string(bytes)}
 
 		// simulate going over the wire
 		resp, ok := doOverWire(ms, cmd)[DoPlan]

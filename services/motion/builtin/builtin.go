@@ -3,8 +3,8 @@ package builtin
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
@@ -12,6 +12,10 @@ import (
 	"github.com/golang/geo/r3"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
+
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/structpb"
+
 	pb "go.viam.com/api/service/motion/v1"
 
 	"go.viam.com/rdk/components/movementsensor"
@@ -351,19 +355,95 @@ func (ms *builtIn) DoCommand(ctx context.Context, cmd map[string]interface{}) (m
 
 	resp := make(map[string]interface{}, 0)
 	if req, ok := cmd[DoPlan]; ok {
-		bytes, err := json.Marshal(req)
+		// fmt.Println("req: ", req)
+		s, err := utils.AssertType[string](req)
 		if err != nil {
 			return nil, err
 		}
 		var moveReqProto pb.MoveRequest
-		err = json.Unmarshal(bytes, &moveReqProto)
+		err = protojson.Unmarshal([]byte(s), &moveReqProto)
 		if err != nil {
 			return nil, err
+		}
+		fields := moveReqProto.Extra.AsMap()
+		if extra, err := utils.AssertType[map[string]interface{}](fields["fields"]); err == nil {
+			v, err := structpb.NewStruct(extra)
+			if err != nil {
+				return nil, err
+			}
+			moveReqProto.Extra = v
 		}
 		moveReq, err := motion.MoveReqFromProto(&moveReqProto)
 		if err != nil {
 			return nil, err
 		}
+		fmt.Println(moveReq.Extra)
+
+		// ---------
+		pcdMap, _ := moveReq.Extra["pcd"].([]int)
+		fmt.Println(pcdMap)
+
+		// -----
+		// pcMap, _ := moveReq.Extra["pointcloud"].(map[string]interface{})
+		// extraAsBytes, err := json.Marshal(pcMap)
+		// if err != nil {
+		// 	return nil, err
+		// }
+
+		// var camProto camerapb.GetPointCloudRequest
+		// err = json.Unmarshal(extraAsBytes, &camProto)
+		// if err != nil {
+		// 	fmt.Println("RETURNING ERROR HERE")
+		// 	return nil, err
+		// }
+		// this only prints the mime type and not the pointcloud bytes as well
+		// fmt.Println("camProto: ", &camProto)
+		// -----
+
+		// -----
+		// pcMap, _ := moveReq.Extra["pointcloud"].(map[string]interface{})
+		// // fmt.Println("pcMap: ", pcMap)
+		// // for k, _ := range pcMap {
+		// // 	fmt.Println("k: ", k)
+		// // }
+		// pcData, ok := pcMap["point_cloud"]
+		// if !ok {
+		// 	return nil, errors.New("could not get point_cloud")
+		// }
+		// fmt.Println("pcData: ", pcData)
+
+		// // Type assertion and conversion to []byte
+		// switch v := pcData.(type) {
+		// case string:
+		// 	b := []byte(v)
+		// 	fmt.Println(b) // If pcData is a string, it prints its byte representation
+		// case []byte:
+		// 	fmt.Println(v) // If pcData is already a []byte, it directly prints
+		// case int:
+		// 	b := []byte(fmt.Sprintf("%d", v)) // Convert int to string, then to []byte
+		// 	fmt.Println(b)
+		// default:
+		// 	fmt.Println("Unsupported type:", v)
+		// }
+
+		// pcDataStringSlice, ok := pcData.([]string)
+		// if !ok {
+		// 	return nil, errors.New("can't convert it to []string")
+		// }
+		// fmt.Println("pcDataStringSlice: ", pcDataStringSlice)
+
+		// pcDataBytes, err := json.Marshal(pcData)
+		// if err != nil {
+		// 	return nil, err
+		// }
+		// fmt.Println("pcDataBytes: ", pcDataBytes)
+		// pc, err := pointcloud.ReadPCD(bytes.NewReader(pcDataBytes))
+		// if err != nil {
+		// 	return nil, err
+		// }
+		// fmt.Println("pc: ", pc)
+		// -----
+
 		plan, err := ms.plan(ctx, moveReq)
 		if err != nil {
 			return nil, err
@@ -381,6 +461,42 @@ func (ms *builtIn) DoCommand(ctx context.Context, cmd map[string]interface{}) (m
 		resp[DoExecute] = true
 	}
 	return resp, nil
+}
+
+func extractNumberValues(v interface{}) []float64 {
+	var result []float64
+
+	// Check the kind of v and process accordingly
+	switch reflect.TypeOf(v).Kind() {
+	case reflect.Map:
+		// If v is a map, iterate over its elements
+		for _, value := range v.(map[string]interface{}) {
+			// Recursively extract from nested values
+			result = append(result, extractNumberValues(value)...)
+		}
+	case reflect.Slice:
+		// If v is a slice, iterate over each element in the slice
+		for _, elem := range v.([]interface{}) {
+			// Recursively extract from each element
+			result = append(result, extractNumberValues(elem)...)
+		}
+	case reflect.Struct:
+		// Handle struct types if necessary (not used here, but a safeguard)
+		// We don't expect structs in your input, so this case is generally not needed
+	}
+
+	// If v is a map, check if it contains a "NumberValue" key
+	if m, ok := v.(map[string]interface{}); ok {
+		if numVal, exists := m["NumberValue"]; exists {
+			if numValue, ok := numVal.(float64); ok {
+				// Append the value to the result
+				result = append(result, numValue)
+			}
+		}
+	}
+
+	// Continue recursively through nested structures
+	return result
 }
 
 func (ms *builtIn) plan(ctx context.Context, req motion.MoveReq) (motionplan.Plan, error) {

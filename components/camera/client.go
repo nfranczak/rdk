@@ -267,6 +267,8 @@ func (c *client) NextPointCloud(ctx context.Context) (pointcloud.PointCloud, err
 		return nil, fmt.Errorf("unknown pc mime type %s", resp.MimeType)
 	}
 
+	// we are interested in this part here
+
 	return func() (pointcloud.PointCloud, error) {
 		_, span := trace.StartSpan(ctx, "camera::client::NextPointCloud::ReadPCD")
 		defer span.End()
