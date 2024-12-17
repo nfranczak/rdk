@@ -371,3 +371,162 @@ func TestBasicOctreeCollision(t *testing.T) {
 		test.That(t, collides, test.ShouldBeTrue)
 	})
 }
+
+func TestReturnClosestPointToCenter(t *testing.T) {
+	tests := []struct {
+		name     string
+		points   []r3.Vector
+		center   r3.Vector
+		expected r3.Vector
+	}{
+		// {
+		// 	name:     "empty octree",
+		// 	points:   []r3.Vector{},
+		// 	center:   r3.Vector{X: 0, Y: 0, Z: 0},
+		// 	expected: r3.Vector{X: 0, Y: 0, Z: 0},
+		// },
+		// {
+		// 	name: "single point",
+		// 	points: []r3.Vector{
+		// 		{X: 1, Y: 1, Z: 1},
+		// 	},
+		// 	center:   r3.Vector{X: 0, Y: 0, Z: 0},
+		// 	expected: r3.Vector{X: 1, Y: 1, Z: 1},
+		// },
+		// {
+		// 	name: "multiple points",
+		// 	points: []r3.Vector{
+		// 		{X: 1, Y: 1, Z: 1},
+		// 		{X: -1, Y: -1, Z: -1},
+		// 		{X: 0.5, Y: 0.5, Z: 0.5},
+		// 	},
+		// 	center:   r3.Vector{X: 0, Y: 0, Z: 0},
+		// 	expected: r3.Vector{X: 0.5, Y: 0.5, Z: 0.5},
+		// },
+		// {
+		// 	name: "offset center",
+		// 	points: []r3.Vector{
+		// 		{X: 10, Y: 10, Z: 10},
+		// 		{X: 8, Y: 8, Z: 8},
+		// 		{X: 12, Y: 12, Z: 12},
+		// 	},
+		// 	center:   r3.Vector{X: 9, Y: 9, Z: 9},
+		// 	expected: r3.Vector{X: 8, Y: 8, Z: 8},
+		// },
+		{
+			name: "real",
+			points: []r3.Vector{
+				{X: -327, Y: 100, Z: 2},
+				{X: -327, Y: 100, Z: 1},
+				{X: -327, Y: 100, Z: 0},
+			},
+			center:   r3.Vector{X: -327, Y: 100.1, Z: 281},
+			expected: r3.Vector{X: -327, Y: 100, Z: 2},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create octree with test points
+			octree, err := NewBasicOctree(tt.center, 1000) // Large enough side length to contain all points
+			test.That(t, err, test.ShouldBeNil)
+
+			// Add points to octree
+			for _, p := range tt.points {
+				err := octree.Set(p, NewBasicData())
+				if err != nil {
+					t.Fatalf("Failed to add point to octree: %v", err)
+				}
+			}
+
+			// Get closest point
+			got := octree.ReturnClosestPointToCenter()
+
+			// Check if result matches expected
+			if !pointsAlmostEqual(got, tt.expected) {
+				t.Errorf("ReturnClosestPointToCenter() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+// Helper function to compare points with small floating-point tolerance
+func pointsAlmostEqual(v1, v2 r3.Vector) bool {
+	const epsilon = 1e-10
+	return math.Abs(v1.X-v2.X) < epsilon &&
+		math.Abs(v1.Y-v2.Y) < epsilon &&
+		math.Abs(v1.Z-v2.Z) < epsilon
+}
+
+func TestBasicOctree_FindClosestPoints(t *testing.T) {
+	// Create a test octree
+	center := r3.Vector{X: 0, Y: 0, Z: 0}
+	octree, err := NewBasicOctree(center, 10.0)
+	test.That(t, err, test.ShouldBeNil)
+
+	// Test points to insert
+	testPoints := []r3.Vector{
+		{X: 1, Y: 1, Z: 1},    // Distance from center: ~1.73
+		{X: 2, Y: 2, Z: 2},    // Distance from center: ~3.46
+		{X: -1, Y: -1, Z: -1}, // Distance from center: ~1.73
+		{X: 4, Y: 4, Z: 4},    // Distance from center: ~6.93
+	}
+
+	// Insert test points
+	for _, p := range testPoints {
+		err := octree.Set(p, NewBasicData())
+		if err != nil {
+			t.Fatalf("Failed to insert point %v: %v", p, err)
+		}
+	}
+
+	tests := []struct {
+		name          string
+		searchPoint   r3.Vector
+		radius        float64
+		expectedCount int
+	}{
+		{
+			name:          "Find points within radius 2",
+			searchPoint:   r3.Vector{X: 0, Y: 0, Z: 0},
+			radius:        2.0,
+			expectedCount: 2, // Should find the two points at (1,1,1) and (-1,-1,-1)
+		},
+		{
+			name:          "Find points within radius 4",
+			searchPoint:   r3.Vector{X: 0, Y: 0, Z: 0},
+			radius:        4.0,
+			expectedCount: 3, // Should find three points: (±1,±1,±1) and (2,2,2)
+		},
+		{
+			name:          "Find points with zero radius",
+			searchPoint:   r3.Vector{X: 1, Y: 1, Z: 1},
+			radius:        0.1,
+			expectedCount: 1, // Should only find (1,1,1)
+		},
+		{
+			name:          "Find points with large radius",
+			searchPoint:   r3.Vector{X: 0, Y: 0, Z: 0},
+			radius:        10.0,
+			expectedCount: 4, // Should find all points
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			points := octree.FindClosestPoints(tt.searchPoint, tt.radius)
+
+			if len(points) != tt.expectedCount {
+				t.Errorf("Expected %d points, got %d points", tt.expectedCount, len(points))
+			}
+
+			// Verify that all returned points are actually within the radius
+			for _, p := range points {
+				distance := tt.searchPoint.Distance(p)
+				if distance > tt.radius {
+					t.Errorf("Found point %v is outside radius %f (distance: %f)", p, tt.radius, distance)
+				}
+			}
+		})
+	}
+}

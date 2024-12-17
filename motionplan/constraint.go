@@ -106,15 +106,28 @@ func createAllCollisionConstraints(
 		for _, geom := range worldGeometries {
 			if octree, ok := geom.(*pointcloud.BasicOctree); ok {
 				if zeroCG == nil {
+					fmt.Println("allowedCollisions: ", allowedCollisions)
+					for _, col := range allowedCollisions {
+						fmt.Println("col.name1: ", col.name1)
+						fmt.Println("col.name2: ", col.name2)
+						fmt.Println("col.penetrationDepth: ", col.penetrationDepth)
+					}
 					zeroCG, err = setupZeroCG(movingRobotGeometries, worldGeometries, allowedCollisions, collisionBufferMM)
 					if err != nil {
 						return nil, nil, err
 					}
 				}
 				for _, collision := range zeroCG.collisions(collisionBufferMM) {
+					// if collision.name1 == allowedCollisions[0].name1 ||
 					if collision.name1 == octree.Label() {
+						if collision.name2 == allowedCollisions[0].name1 || collision.name2 == allowedCollisions[1].name1 || collision.name2 == allowedCollisions[2].name1 {
+							continue
+						}
 						return nil, nil, fmt.Errorf("starting collision between SLAM map and %s, cannot move", collision.name2)
 					} else if collision.name2 == octree.Label() {
+						if collision.name1 == allowedCollisions[0].name1 || collision.name1 == allowedCollisions[1].name1 || collision.name1 == allowedCollisions[2].name1 {
+							continue
+						}
 						return nil, nil, fmt.Errorf("starting collision between SLAM map and %s, cannot move", collision.name1)
 					}
 				}
@@ -242,6 +255,7 @@ func NewCollisionConstraint(
 		if err != nil {
 			return false
 		}
+		fmt.Println("cg.collisions(collisionBufferMM): ", cg.collisions(collisionBufferMM))
 		return len(cg.collisions(collisionBufferMM)) == 0
 	}
 	return constraint, nil

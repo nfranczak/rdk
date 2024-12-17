@@ -55,6 +55,50 @@ func getRawVal(d Data) int {
 	return emptyProb
 }
 
+func (octree *BasicOctree) ReturnClosestPointToCenter() r3.Vector {
+	centerVec := octree.center
+
+	// If the octree is empty, return the center
+	if octree.size == 0 {
+		return centerVec
+	}
+
+	var closestPoint r3.Vector
+	minDistance := math.MaxFloat64
+	initialized := false
+
+	// Use helperIterate to go through all points
+	octree.helperIterate(0, octree.size, 0, func(p r3.Vector, d Data) bool {
+		distance := centerVec.Distance(p)
+		if !initialized || distance < minDistance {
+			minDistance = distance
+			closestPoint = p
+			initialized = true
+		}
+		return true // Continue iteration
+	})
+
+	if initialized {
+		return closestPoint
+	}
+
+	// Fallback case (shouldn't be reached with valid non-empty octree)
+	return centerVec
+}
+
+func (octree *BasicOctree) FindClosestPoints(point r3.Vector, radius float64) []r3.Vector {
+	closestPoints := []r3.Vector{}
+	octree.helperIterate(0, octree.size, 0, func(p r3.Vector, d Data) bool {
+		distance := point.Distance(p)
+		if distance < radius {
+			closestPoints = append(closestPoints, p)
+		}
+		return true // Continue iteration
+	})
+
+	return closestPoints
+}
+
 // Splits a basic octree into multiple octants and will place any stored point in appropriate child
 // node. Note: splitIntoOctants should only be called when an octree is a LeafNodeFilled.
 func (octree *BasicOctree) splitIntoOctants() error {
