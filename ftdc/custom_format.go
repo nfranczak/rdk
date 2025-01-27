@@ -329,6 +329,7 @@ func flatten(datum datum, schema *schema) ([]float32, error) {
 //
 // [ Reading{"webrtc.connections", 5}, Reading{"webrtc.bytesSent", 8096} ].
 type FlatDatum struct {
+	// Time is a 64 bit integer representing nanoseconds since the epoch.
 	Time     int64
 	Readings []Reading
 }
@@ -429,7 +430,9 @@ func ParseWithLogger(rawReader io.Reader, logger logging.Logger) ([]FlatDatum, e
 		// "packed byte" where the first bit is not a diff bit. `readDiffBits` must account for
 		// that.
 		diffedFieldsIndexes := readDiffBits(reader, schema)
-		logger.Debugw("Diff bits", "changedFields", diffedFieldsIndexes)
+		logger.Debugw("Diff bits",
+			"changedFieldIndexes", diffedFieldsIndexes,
+			"changedFieldNames", schema.FieldNamesForIndexes(diffedFieldsIndexes))
 
 		// The next eight bytes after the diff bits is the time in nanoseconds since the 1970 epoch.
 		var dataTime int64
@@ -649,6 +652,17 @@ func (schema *schema) Zip(data []float32) []Reading {
 	ret := make([]Reading, len(schema.fieldOrder))
 	for fieldIdx, metricName := range schema.fieldOrder {
 		ret[fieldIdx] = Reading{metricName, data[fieldIdx]}
+	}
+
+	return ret
+}
+
+// FieldNamesForIndexes maps the integers to their string form as defined in the schema. This is
+// useful for creating human consumable output.
+func (schema *schema) FieldNamesForIndexes(fieldIdxs []int) []string {
+	ret := make([]string, len(fieldIdxs))
+	for idx, fieldIdx := range fieldIdxs {
+		ret[idx] = schema.fieldOrder[fieldIdx]
 	}
 
 	return ret

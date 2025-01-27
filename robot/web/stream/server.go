@@ -22,7 +22,7 @@ import (
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/resource"
 	"go.viam.com/rdk/robot"
-	streamCamera "go.viam.com/rdk/robot/web/stream/camera"
+	camerautils "go.viam.com/rdk/robot/web/stream/camera"
 	"go.viam.com/rdk/robot/web/stream/state"
 	rutils "go.viam.com/rdk/utils"
 )
@@ -30,6 +30,12 @@ import (
 const (
 	monitorCameraInterval = time.Second
 	retryDelay            = 50 * time.Millisecond
+)
+
+const (
+	optionsCommandResize = iota
+	optionsCommandReset
+	optionsCommandUnknown
 )
 
 type peerState struct {
@@ -164,7 +170,7 @@ func (server *Server) AddStream(ctx context.Context, req *streampb.AddStreamRequ
 	}
 
 	// return error if resource is neither a camera nor audioinput
-	_, isCamErr := streamCamera.Camera(server.robot, streamStateToAdd.Stream)
+	_, isCamErr := camerautils.Camera(server.robot, streamStateToAdd.Stream)
 	_, isAudioErr := audioinput.FromRobot(server.robot, resource.SDPTrackNameToShortName(streamStateToAdd.Stream.Name()))
 	if isCamErr != nil && isAudioErr != nil {
 		return nil, errors.Errorf("stream is neither a camera nor audioinput. streamName: %v", streamStateToAdd.Stream)
@@ -301,7 +307,7 @@ func (server *Server) RemoveStream(ctx context.Context, req *streampb.RemoveStre
 
 	shortName := resource.SDPTrackNameToShortName(streamToRemove.Stream.Name())
 	_, isAudioResourceErr := audioinput.FromRobot(server.robot, shortName)
-	_, isCameraResourceErr := streamCamera.Camera(server.robot, streamToRemove.Stream)
+	_, isCameraResourceErr := camerautils.Camera(server.robot, streamToRemove.Stream)
 
 	if isAudioResourceErr != nil && isCameraResourceErr != nil {
 		return &streampb.RemoveStreamResponse{}, nil
@@ -370,6 +376,111 @@ func (server *Server) GetStreamOptions(
 	return &streampb.GetStreamOptionsResponse{
 		Resolutions: resolutions,
 	}, nil
+}
+
+// SetStreamOptions implements part of the StreamServiceServer. It sets the resolution of the stream
+// to the given width and height.
+func (server *Server) SetStreamOptions(
+	ctx context.Context,
+	req *streampb.SetStreamOptionsRequest,
+) (*streampb.SetStreamOptionsResponse, error) {
+	cmd, err := validateSetStreamOptionsRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	switch cmd {
+	case optionsCommandResize:
+		err = server.resizeVideoSource(req.Name, int(req.Resolution.Width), int(req.Resolution.Height))
+		if err != nil {
+			return nil, fmt.Errorf("failed to resize video source for stream %q: %w", req.Name, err)
+		}
+	case optionsCommandReset:
+		err = server.resetVideoSource(req.Name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reset video source for stream %q: %w", req.Name, err)
+		}
+	default:
+		return nil, fmt.Errorf("unknown command type %v", cmd)
+	}
+	return &streampb.SetStreamOptionsResponse{}, nil
+}
+
+// validateSetStreamOptionsRequest validates the request to set the stream options.
+func validateSetStreamOptionsRequest(req *streampb.SetStreamOptionsRequest) (int, error) {
+	if req.Name == "" {
+		return optionsCommandUnknown, errors.New("stream name is required in request")
+	}
+	if req.Resolution == nil {
+		return optionsCommandReset, nil
+	}
+	if req.Resolution.Width <= 0 || req.Resolution.Height <= 0 {
+		return optionsCommandUnknown,
+			fmt.Errorf(
+				"invalid resolution to resize stream %q: width (%d) and height (%d) must be greater than 0",
+				req.Name, req.Resolution.Width, req.Resolution.Height,
+			)
+	}
+	if req.Resolution.Width%2 != 0 || req.Resolution.Height%2 != 0 {
+		return optionsCommandUnknown,
+			fmt.Errorf(
+				"invalid resolution to resize stream %q: width (%d) and height (%d) must be even",
+				req.Name, req.Resolution.Width, req.Resolution.Height,
+			)
+	}
+	return optionsCommandResize, nil
+}
+
+// resizeVideoSource resizes the video source with the given name.
+func (server *Server) resizeVideoSource(name string, width, height int) error {
+	existing, ok := server.videoSources[name]
+	if !ok {
+		return fmt.Errorf("video source %q not found", name)
+	}
+	cam, err := camera.FromRobot(server.robot, name)
+	if err != nil {
+		server.logger.Errorf("error getting camera %q from robot", name)
+		return err
+	}
+	streamState, ok := server.nameToStreamState[name]
+	if !ok {
+		return fmt.Errorf("stream state not found with name %q", name)
+	}
+	resizer := gostream.NewResizeVideoSource(cam, width, height)
+	server.logger.Debugf(
+		"resizing video source to width %d and height %d",
+		width, height,
+	)
+	existing.Swap(resizer)
+	err = streamState.Resize()
+	if err != nil {
+		return fmt.Errorf("failed to resize stream %q: %w", name, err)
+	}
+	return nil
+}
+
+// resetVideoSource resets the video source with the given name to the source resolution.
+func (server *Server) resetVideoSource(name string) error {
+	existing, ok := server.videoSources[name]
+	if !ok {
+		return fmt.Errorf("video source %q not found", name)
+	}
+	cam, err := camera.FromRobot(server.robot, name)
+	if err != nil {
+		server.logger.Errorf("error getting camera %q from robot", name)
+	}
+	streamState, ok := server.nameToStreamState[name]
+	if !ok {
+		return fmt.Errorf("stream state not found with name %q", name)
+	}
+	server.logger.Debug("resetting video source")
+	existing.Swap(cam)
+	err = streamState.Reset()
+	if err != nil {
+		return fmt.Errorf("failed to reset stream %q: %w", name, err)
+	}
+	return nil
 }
 
 // AddNewStreams adds new video and audio streams to the server using the updated set of video and
@@ -627,11 +738,18 @@ func GenerateResolutions(width, height int32, logger logging.Logger) []Resolutio
 	// original aspect ratio exactly if source dimensions are odd.
 	for i := 0; i < 4; i++ {
 		// Break if the next scaled resolution would be too small.
-		if width <= 1 || height <= 1 {
+		if width <= 2 || height <= 2 {
 			break
 		}
 		width /= 2
 		height /= 2
+		// Ensure width and height are even
+		if width%2 != 0 {
+			width--
+		}
+		if height%2 != 0 {
+			height--
+		}
 		resolutions = append(resolutions, Resolution{Width: width, Height: height})
 		logger.Debugf("scaled resolution %d: %dx%d", i, width, height)
 	}

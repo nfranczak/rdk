@@ -60,6 +60,12 @@ var (
 
 	// defaultResourcesTimeout is the default timeout for getting resources.
 	defaultResourcesTimeout = 5 * time.Second
+
+	// DoNotWaitForRunning should be set only in tests to allow connecting to
+	// still-initializing machines. Note that robot clients in production (not in
+	// a testing environment) will already allow connecting to still-initializing
+	// machines.
+	DoNotWaitForRunning = atomic.Bool{}
 )
 
 // RobotClient satisfies the robot.Robot interface through a gRPC based
@@ -130,11 +136,33 @@ func skipConnectionCheck(method string) bool {
 	return exemptFromConnectionCheck[method]
 }
 
-func isClosedPipeError(err error) bool {
+// TODO(RSDK-9333): Better account for possible gRPC interaction errors
+// and transform them appropriately.
+//
+// NOTE(benjirewis): I believe gRPC interactions can fail in
+// three broad ways, each with one to three error paths:
+//
+//  1. Creation of stream
+//     a. `rpc.ErrDisconnected` returned due to underlying channel closure
+//  2. Sending of headers/message representing request
+//     a. Proto marshal failure
+//     b. `io.ErrClosedPipe` due to write to a closed socket
+//     c. Possible SCTP errors `ErrStreamClosed` and `ErrOutboundPacketTooLarge`
+//  3. Receiving of response
+//     a. Proto unmarshal failure
+//     b. `io.EOF` due to reading from a closed socket
+//     c. Context deadline exceeded due to timeout
+//     d. Context canceled due to client cancelation
+//
+// Ideally, these paths would all be represented in a single error type that a
+// Golang SDK user could treat as one error, and we could examine the message
+// of the error to see _where_ exactly the failure was in the interaction.
+func isDisconnectedError(err error) bool {
 	if err == nil {
 		return false
 	}
-	return strings.Contains(err.Error(), io.ErrClosedPipe.Error())
+	return errors.Is(err, rpc.ErrDisconnected) ||
+		strings.Contains(err.Error(), io.ErrClosedPipe.Error())
 }
 
 func (rc *RobotClient) notConnectedToRemoteError() error {
@@ -161,7 +189,7 @@ func (rc *RobotClient) handleUnaryDisconnect(
 	err := invoker(ctx, method, req, reply, cc, opts...)
 	// we might lose connection before our background check detects it - in this case we
 	// should still surface a helpful error message.
-	if isClosedPipeError(err) {
+	if isDisconnectedError(err) {
 		return status.Error(codes.Unavailable, rc.notConnectedToRemoteError().Error())
 	}
 	return err
@@ -180,7 +208,7 @@ func (cs *handleDisconnectClientStream) RecvMsg(m interface{}) error {
 	// we might lose connection before our background check detects it - in this case we
 	// should still surface a helpful error message.
 	err := cs.ClientStream.RecvMsg(m)
-	if isClosedPipeError(err) {
+	if isDisconnectedError(err) {
 		return status.Error(codes.Unavailable, cs.RobotClient.notConnectedToRemoteError().Error())
 	}
 
@@ -207,7 +235,7 @@ func (rc *RobotClient) handleStreamDisconnect(
 	cs, err := streamer(ctx, desc, cc, method, opts...)
 	// we might lose connection before our background check detects it - in this case we
 	// should still surface a helpful error message.
-	if isClosedPipeError(err) {
+	if isDisconnectedError(err) {
 		return nil, status.Error(codes.Unavailable, rc.notConnectedToRemoteError().Error())
 	}
 	return &handleDisconnectClientStream{cs, rc}, err
@@ -264,6 +292,41 @@ func New(ctx context.Context, address string, clientLogger logging.ZapCompatible
 
 	if err := rc.Connect(ctx); err != nil {
 		return nil, err
+	}
+
+	// If running in a testing environment, wait for machine to report a state of
+	// running. We often establish connections in tests and expect resources to
+	// be immediately available once the web service has started; resources will
+	// not be available when the machine is still initializing.
+	//
+	// It is expected that golang SDK users will handle lack of resource
+	// availability due to the machine being in an initializing state themselves.
+	//
+	// Allow this behavior to be turned off in some tests that specifically want
+	// to examine the behavior of a machine in an initializing state through the
+	// use of a global variable.
+	if testing.Testing() && !DoNotWaitForRunning.Load() {
+		for {
+			if ctx.Err() != nil {
+				return nil, multierr.Combine(ctx.Err(), rc.conn.Close())
+			}
+
+			mStatus, err := rc.MachineStatus(ctx)
+			if err != nil {
+				// Allow for MachineStatus to not be injected/implemented in some tests.
+				if status.Code(err) == codes.Unimplemented {
+					break
+				}
+				// Ignore error from Close and just return original machine status error.
+				utils.UncheckedError(rc.conn.Close())
+				return nil, err
+			}
+
+			if mStatus.State == robot.StateRunning {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
 	}
 
 	// refresh once to hydrate the robot.
@@ -485,8 +548,7 @@ func (rc *RobotClient) checkConnection(ctx context.Context, checkEvery, reconnec
 				err := check()
 				if err != nil {
 					outerError = err
-					// if pipe is closed, we know for sure we lost connection
-					if isClosedPipeError(err) {
+					if isDisconnectedError(err) {
 						break
 					}
 					// otherwise retry
@@ -798,6 +860,7 @@ func (rc *RobotClient) Logger() logging.Logger {
 	return rc.logger
 }
 
+// DiscoverComponents is DEPRECATED!!! Please use the Discovery Service instead.
 // DiscoverComponents takes a list of discovery queries and returns corresponding
 // component configurations.
 //
@@ -809,7 +872,11 @@ func (rc *RobotClient) Logger() logging.Logger {
 //
 //	// Get component configurations with these queries.
 //	component_configs, err := machine.DiscoverComponents(ctx.Background(), qs)
+//
+//nolint:deprecated,staticcheck
 func (rc *RobotClient) DiscoverComponents(ctx context.Context, qs []resource.DiscoveryQuery) ([]resource.Discovery, error) {
+	rc.logger.Warn(
+		"DiscoverComponents is deprecated and will be removed on March 10th 2025. Please use the Discovery Service instead.")
 	pbQueries := make([]*pb.DiscoveryQuery, 0, len(qs))
 	for _, q := range qs {
 		extra, err := structpb.NewStruct(q.Extra)
@@ -933,34 +1000,6 @@ func (rc *RobotClient) TransformPointCloud(ctx context.Context, srcpc pointcloud
 	return pointcloud.ApplyOffset(ctx, srcpc, transformPose, rc.Logger())
 }
 
-// Status returns the status of the resources on the machine. You can provide a list of ResourceNames for which you want
-// statuses. If no names are passed in, the status of every resource available on the machine is returned.
-//
-//	status, err := machine.Status(ctx.Background())
-func (rc *RobotClient) Status(ctx context.Context, resourceNames []resource.Name) ([]robot.Status, error) {
-	names := make([]*commonpb.ResourceName, 0, len(resourceNames))
-	for _, name := range resourceNames {
-		names = append(names, rprotoutils.ResourceNameToProto(name))
-	}
-
-	//nolint:staticcheck // the status API is deprecated
-	resp, err := rc.client.GetStatus(ctx, &pb.GetStatusRequest{ResourceNames: names})
-	if err != nil {
-		return nil, err
-	}
-
-	statuses := make([]robot.Status, 0, len(resp.Status))
-	for _, status := range resp.Status {
-		statuses = append(
-			statuses, robot.Status{
-				Name:             rprotoutils.ResourceNameFromProto(status.Name),
-				LastReconfigured: status.LastReconfigured.AsTime(),
-				Status:           status.Status.AsMap(),
-			})
-	}
-	return statuses, nil
-}
-
 // StopAll cancels all current and outstanding operations for the machine and stops all actuators and movement.
 //
 //	err := machine.StopAll(ctx.Background())
@@ -1021,17 +1060,12 @@ func (rc *RobotClient) Log(ctx context.Context, log zapcore.Entry, fields []zap.
 //
 //	metadata, err := machine.CloudMetadata(ctx.Background())
 func (rc *RobotClient) CloudMetadata(ctx context.Context) (cloud.Metadata, error) {
-	cloudMD := cloud.Metadata{}
 	req := &pb.GetCloudMetadataRequest{}
 	resp, err := rc.client.GetCloudMetadata(ctx, req)
 	if err != nil {
-		return cloudMD, err
+		return cloud.Metadata{}, err
 	}
-	cloudMD.PrimaryOrgID = resp.PrimaryOrgId
-	cloudMD.LocationID = resp.LocationId
-	cloudMD.MachineID = resp.MachineId
-	cloudMD.MachinePartID = resp.MachinePartId
-	return cloudMD, nil
+	return rprotoutils.MetadataFromProto(resp), nil
 }
 
 // RestartModule restarts a running module by name or ID.
@@ -1097,9 +1131,12 @@ func (rc *RobotClient) MachineStatus(ctx context.Context) (robot.MachineStatus, 
 	mStatus.Resources = make([]resource.Status, 0, len(resp.Resources))
 	for _, pbResStatus := range resp.Resources {
 		resStatus := resource.Status{
-			Name:        rprotoutils.ResourceNameFromProto(pbResStatus.Name),
-			LastUpdated: pbResStatus.LastUpdated.AsTime(),
-			Revision:    pbResStatus.Revision,
+			NodeStatus: resource.NodeStatus{
+				Name:        rprotoutils.ResourceNameFromProto(pbResStatus.Name),
+				LastUpdated: pbResStatus.LastUpdated.AsTime(),
+				Revision:    pbResStatus.Revision,
+			},
+			CloudMetadata: rprotoutils.MetadataFromProto(pbResStatus.CloudMetadata),
 		}
 
 		switch pbResStatus.State {
@@ -1122,6 +1159,16 @@ func (rc *RobotClient) MachineStatus(ctx context.Context) (robot.MachineStatus, 
 		}
 
 		mStatus.Resources = append(mStatus.Resources, resStatus)
+	}
+
+	switch resp.State {
+	case pb.GetMachineStatusResponse_STATE_UNSPECIFIED:
+		rc.logger.CError(ctx, "received unspecified machine state")
+		mStatus.State = robot.StateUnknown
+	case pb.GetMachineStatusResponse_STATE_INITIALIZING:
+		mStatus.State = robot.StateInitializing
+	case pb.GetMachineStatusResponse_STATE_RUNNING:
+		mStatus.State = robot.StateRunning
 	}
 
 	return mStatus, nil

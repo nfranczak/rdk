@@ -6,6 +6,7 @@ package camera
 
 import (
 	"context"
+	"fmt"
 	"image"
 
 	"github.com/pkg/errors"
@@ -15,8 +16,10 @@ import (
 	"go.viam.com/rdk/gostream"
 	"go.viam.com/rdk/pointcloud"
 	"go.viam.com/rdk/resource"
+	"go.viam.com/rdk/rimage"
 	"go.viam.com/rdk/rimage/transform"
 	"go.viam.com/rdk/robot"
+	"go.viam.com/rdk/utils"
 )
 
 func init() {
@@ -70,14 +73,31 @@ type NamedImage struct {
 	SourceName string
 }
 
+// ImageMetadata contains useful information about returned image bytes such as its mimetype.
+type ImageMetadata struct {
+	MimeType string
+}
+
 // A Camera is a resource that can capture frames.
 type Camera interface {
 	resource.Resource
 	VideoSource
 }
 
-// A VideoSource represents anything that can capture frames.
+// VideoSource represents anything that can capture frames.
 // For more information, see the [camera component docs].
+//
+// Image example:
+//
+//	myCamera, err := camera.FromRobot(machine, "my_camera")
+//	imageBytes, mimeType, err := myCamera.Image(context.Background(), utils.MimeTypeJPEG, nil)
+//
+// Or try to directly decode as an image.Image:
+//
+//	myCamera, err := camera.FromRobot(machine, "my_camera")
+//	img, err = camera.DecodeImageFromCamera(context.Background(), utils.MimeTypeJPEG, nil, myCamera)
+//
+// For more information, see the [Image method docs].
 //
 // Images example:
 //
@@ -85,16 +105,7 @@ type Camera interface {
 //
 //	images, metadata, err := myCamera.Images(context.Background())
 //
-// Stream example:
-//
-//	myCamera, err := camera.FromRobot(machine, "my_camera")
-//
-//	// gets the stream from a camera
-//	stream, err := myCamera.Stream(context.Background())
-//
-//	// gets an image from the camera stream
-//	img, release, err := stream.Next(context.Background())
-//	defer release()
+// For more information, see the [Images method docs].
 //
 // NextPointCloud example:
 //
@@ -103,14 +114,26 @@ type Camera interface {
 //	// gets the next point cloud from a camera
 //	pointCloud, err := myCamera.NextPointCloud(context.Background())
 //
+// For more information, see the [NextPointCloud method docs].
+//
 // Close example:
 //
 //	myCamera, err := camera.FromRobot(machine, "my_camera")
 //
 //	err = myCamera.Close(context.Background())
 //
-// [camera component docs]: https://docs.viam.com/components/camera/
+// For more information, see the [Close method docs].
+//
+// [camera component docs]: https://docs.viam.com/dev/reference/apis/components/camera/
+// [Image method docs]: https://docs.viam.com/dev/reference/apis/components/camera/#getimage
+// [Images method docs]: https://docs.viam.com/dev/reference/apis/components/camera/#getimages
+// [NextPointCloud method docs]: https://docs.viam.com/dev/reference/apis/components/camera/#getpointcloud
+// [Close method docs]: https://docs.viam.com/dev/reference/apis/components/camera/#close
 type VideoSource interface {
+	// Image returns a byte slice representing an image that tries to adhere to the MIME type hint.
+	// Image also may return metadata about the frame.
+	Image(ctx context.Context, mimeType string, extra map[string]interface{}) ([]byte, ImageMetadata, error)
+
 	// Images is used for getting simultaneous images from different imagers,
 	// along with associated metadata (just timestamp for now). It's not for getting a time series of images from the same imager.
 	Images(ctx context.Context) ([]NamedImage, resource.ResponseMetadata, error)
@@ -134,6 +157,22 @@ type VideoSource interface {
 // ReadImage reads an image from the given source that is immediately available.
 func ReadImage(ctx context.Context, src gostream.VideoSource) (image.Image, func(), error) {
 	return gostream.ReadImage(ctx, src)
+}
+
+// DecodeImageFromCamera retrieves image bytes from a camera resource and serializes it as an image.Image.
+func DecodeImageFromCamera(ctx context.Context, mimeType string, extra map[string]interface{}, cam Camera) (image.Image, error) {
+	resBytes, resMetadata, err := cam.Image(ctx, mimeType, extra)
+	if err != nil {
+		return nil, fmt.Errorf("could not get image bytes from camera: %w", err)
+	}
+	if len(resBytes) == 0 {
+		return nil, errors.New("received empty bytes from camera")
+	}
+	img, err := rimage.DecodeImage(ctx, resBytes, utils.WithLazyMIMEType(resMetadata.MimeType))
+	if err != nil {
+		return nil, fmt.Errorf("could not decode into image.Image: %w", err)
+	}
+	return img, nil
 }
 
 // A PointCloudSource is a source that can generate pointclouds.

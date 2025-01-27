@@ -10,10 +10,8 @@ import (
 
 	"github.com/pkg/errors"
 	"go.opencensus.io/trace"
-	"go.uber.org/multierr"
 
 	"go.viam.com/rdk/components/camera"
-	"go.viam.com/rdk/gostream"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/pointcloud"
 	"go.viam.com/rdk/resource"
@@ -62,7 +60,6 @@ func init() {
 type transformConfig struct {
 	CameraParameters     *transform.PinholeCameraIntrinsics `json:"intrinsic_parameters,omitempty"`
 	DistortionParameters *transform.BrownConrady            `json:"distortion_parameters,omitempty"`
-	Debug                bool                               `json:"debug,omitempty"`
 	Source               string                             `json:"source"`
 	Pipeline             []Transformation                   `json:"pipeline"`
 }
@@ -89,7 +86,7 @@ func (cfg *transformConfig) Validate(path string) ([]string, error) {
 
 func newTransformPipeline(
 	ctx context.Context,
-	source gostream.VideoSource,
+	source camera.VideoSource,
 	cfg *transformConfig,
 	r robot.Robot,
 	logger logging.Logger,
@@ -117,10 +114,10 @@ func newTransformPipeline(
 		release()
 	}
 	// loop through the pipeline and create the image flow
-	pipeline := make([]gostream.VideoSource, 0, len(cfg.Pipeline))
+	pipeline := make([]camera.VideoSource, 0, len(cfg.Pipeline))
 	lastSource := source
 	for _, tr := range cfg.Pipeline {
-		src, newStreamType, err := buildTransform(ctx, r, lastSource, streamType, tr, cfg.Source)
+		src, newStreamType, err := buildTransform(ctx, r, lastSource, streamType, tr)
 		if err != nil {
 			return nil, err
 		}
@@ -128,19 +125,18 @@ func newTransformPipeline(
 		lastSource = src
 		streamType = newStreamType
 	}
-	lastSourceStream := gostream.NewEmbeddedVideoStream(lastSource)
 	cameraModel := camera.NewPinholeModelWithBrownConradyDistortion(cfg.CameraParameters, cfg.DistortionParameters)
 	return camera.NewVideoSourceFromReader(
 		ctx,
-		transformPipeline{pipeline, lastSourceStream, cfg.CameraParameters, logger},
+		transformPipeline{pipeline, lastSource, cfg.CameraParameters, logger},
 		&cameraModel,
 		streamType,
 	)
 }
 
 type transformPipeline struct {
-	pipeline            []gostream.VideoSource
-	stream              gostream.VideoStream
+	pipeline            []camera.VideoSource
+	src                 camera.VideoSource
 	intrinsicParameters *transform.PinholeCameraIntrinsics
 	logger              logging.Logger
 }
@@ -148,7 +144,7 @@ type transformPipeline struct {
 func (tp transformPipeline) Read(ctx context.Context) (image.Image, func(), error) {
 	ctx, span := trace.StartSpan(ctx, "camera::transformpipeline::Read")
 	defer span.End()
-	return tp.stream.Next(ctx)
+	return camera.ReadImage(ctx, tp.src)
 }
 
 func (tp transformPipeline) NextPointCloud(ctx context.Context) (pointcloud.PointCloud, error) {
@@ -165,16 +161,5 @@ func (tp transformPipeline) NextPointCloud(ctx context.Context) (pointcloud.Poin
 }
 
 func (tp transformPipeline) Close(ctx context.Context) error {
-	var errs error
-	for _, src := range tp.pipeline {
-		errs = multierr.Combine(errs, func() (err error) {
-			defer func() {
-				if panicErr := recover(); panicErr != nil {
-					err = multierr.Combine(err, errors.Errorf("panic: %v", panicErr))
-				}
-			}()
-			return src.Close(ctx)
-		}())
-	}
-	return multierr.Combine(tp.stream.Close(ctx), errs)
+	return nil
 }

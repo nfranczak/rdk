@@ -7,7 +7,6 @@ import (
 	"github.com/pion/mediadevices/pkg/prop"
 	"github.com/pkg/errors"
 	"go.opencensus.io/trace"
-	"go.uber.org/multierr"
 
 	"go.viam.com/rdk/components/camera/rtppassthrough"
 	"go.viam.com/rdk/gostream"
@@ -19,6 +18,7 @@ import (
 	"go.viam.com/rdk/rimage/transform"
 )
 
+// FromVideoSource is DEPRECATED!!! Please implement cameras according to the camera.Camera interface.
 // FromVideoSource creates a Camera resource from a VideoSource.
 // Note: this strips away Reconfiguration and DoCommand abilities.
 // If needed, implement the Camera another way. For example, a webcam
@@ -80,6 +80,7 @@ func (vs *videoSource) Unsubscribe(ctx context.Context, id rtppassthrough.Subscr
 	return errors.New("Unsubscribe unimplemented")
 }
 
+// NewPinholeModelWithBrownConradyDistortion is DEPRECATED!!! Please implement cameras according to the camera.Camera interface.
 // NewPinholeModelWithBrownConradyDistortion creates a transform.PinholeCameraModel from
 // a *transform.PinholeCameraIntrinsics and a *transform.BrownConrady.
 // If *transform.BrownConrady is `nil`, transform.PinholeCameraModel.Distortion
@@ -96,6 +97,7 @@ func NewPinholeModelWithBrownConradyDistortion(pinholeCameraIntrinsics *transfor
 	return cameraModel
 }
 
+// NewVideoSourceFromReader is DEPRECATED!!! Please implement cameras according to the camera.Camera interface.
 // NewVideoSourceFromReader creates a VideoSource either with or without a projector. The stream type
 // argument is for detecting whether or not the resulting camera supports return
 // of pointcloud data in the absence of an implemented NextPointCloud function.
@@ -136,12 +138,12 @@ func NewVideoSourceFromReader(
 		rtpPassthroughSource: rtpPassthroughSource,
 		system:               actualSystem,
 		videoSource:          vs,
-		videoStream:          gostream.NewEmbeddedVideoStream(vs),
 		actualSource:         reader,
 		imageType:            imageType,
 	}, nil
 }
 
+// WrapVideoSourceWithProjector is DEPRECATED!!! Please implement cameras according to the camera.Camera interface.
 // WrapVideoSourceWithProjector creates a Camera either with or without a projector. The stream type
 // argument is for detecting whether or not the resulting camera supports return
 // of pointcloud data in the absence of an implemented NextPointCloud function.
@@ -177,7 +179,6 @@ func WrapVideoSourceWithProjector(
 	return &videoSource{
 		system:       actualSystem,
 		videoSource:  source,
-		videoStream:  gostream.NewEmbeddedVideoStream(source),
 		actualSource: source,
 		imageType:    imageType,
 	}, nil
@@ -187,7 +188,6 @@ func WrapVideoSourceWithProjector(
 type videoSource struct {
 	rtpPassthroughSource rtppassthrough.Source
 	videoSource          gostream.VideoSource
-	videoStream          gostream.VideoStream
 	actualSource         interface{}
 	system               *transform.PinholeCameraModel
 	imageType            ImageType
@@ -195,6 +195,26 @@ type videoSource struct {
 
 func (vs *videoSource) Stream(ctx context.Context, errHandlers ...gostream.ErrorHandler) (gostream.VideoStream, error) {
 	return vs.videoSource.Stream(ctx, errHandlers...)
+}
+
+// ReadImageBytes wraps ReadImage given a mimetype to encode the image as bytes data, returning
+// supplementary metadata for downstream processing.
+// TODO(hexbabe): make function private or remove altogether once the usages are limited to this file.
+func ReadImageBytes(ctx context.Context, src gostream.VideoSource, mimeType string) ([]byte, ImageMetadata, error) {
+	img, release, err := ReadImage(ctx, src)
+	if err != nil {
+		return nil, ImageMetadata{}, err
+	}
+	defer release()
+	imgBytes, err := rimage.EncodeImage(ctx, img, mimeType)
+	if err != nil {
+		return nil, ImageMetadata{}, err
+	}
+	return imgBytes, ImageMetadata{MimeType: mimeType}, nil
+}
+
+func (vs *videoSource) Image(ctx context.Context, mimeType string, extra map[string]interface{}) ([]byte, ImageMetadata, error) {
+	return ReadImageBytes(ctx, vs.videoSource, mimeType)
 }
 
 // Images is for getting simultaneous images from different sensors
@@ -229,7 +249,7 @@ func (vs *videoSource) NextPointCloud(ctx context.Context) (pointcloud.PointClou
 	if vs.system == nil || vs.system.PinholeCameraIntrinsics == nil {
 		return nil, transform.NewNoIntrinsicsError("cannot do a projection to a point cloud")
 	}
-	img, release, err := vs.videoStream.Next(ctx)
+	img, release, err := ReadImage(ctx, vs.videoSource)
 	defer release()
 	if err != nil {
 		return nil, err
@@ -270,5 +290,8 @@ func (vs *videoSource) Properties(ctx context.Context) (Properties, error) {
 }
 
 func (vs *videoSource) Close(ctx context.Context) error {
-	return multierr.Combine(vs.videoStream.Close(ctx), vs.videoSource.Close(ctx))
+	if res, ok := vs.actualSource.(resource.Resource); ok {
+		return res.Close(ctx)
+	}
+	return vs.videoSource.Close(ctx)
 }

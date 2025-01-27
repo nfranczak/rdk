@@ -3,23 +3,20 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"html/template"
 	"io"
-	"io/fs"
 	"net"
 	"net/http"
 	"net/http/pprof"
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 
-	"github.com/Masterminds/sprig"
-	"github.com/NYTimes/gziphandler"
 	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
 	"github.com/jhump/protoreflect/dynamic"
 	"github.com/pkg/errors"
@@ -43,131 +40,23 @@ import (
 	grpcserver "go.viam.com/rdk/robot/server"
 	weboptions "go.viam.com/rdk/robot/web/options"
 	rutils "go.viam.com/rdk/utils"
-	"go.viam.com/rdk/web"
 )
 
 // SubtypeName is a constant that identifies the internal web resource subtype string.
-const SubtypeName = "web"
+const (
+	SubtypeName = "web"
+	// TCPParentPort is the port of the parent socket when VIAM_TCP_MODE is set.
+	TCPParentPort = 14998
+	// TestTCPParentPort is the test suite version of TCPParentPort. It's different to avoid
+	// collisions; it's listed here for documentation.
+	TestTCPParentPort = 14999
+)
 
 // API is the fully qualified API for the internal web service.
 var API = resource.APINamespaceRDKInternal.WithServiceType(SubtypeName)
 
 // InternalServiceName is used to refer to/depend on this service internally.
 var InternalServiceName = resource.NewName(API, "builtin")
-
-// robotWebApp hosts a web server to interact with a robot in addition to hosting
-// a gRPC/REST server.
-type robotWebApp struct {
-	template *template.Template
-	theRobot robot.Robot
-	logger   logging.Logger
-	options  weboptions.Options
-}
-
-// Init does template initialization work.
-func (app *robotWebApp) Init() error {
-	var err error
-
-	t := template.New("foo").Funcs(template.FuncMap{
-		//nolint:gosec
-		"jsSafe": func(js string) template.JS {
-			return template.JS(js)
-		},
-		//nolint:gosec
-		"htmlSafe": func(html string) template.HTML {
-			return template.HTML(html)
-		},
-	}).Funcs(sprig.FuncMap())
-
-	if app.options.SharedDir != "" {
-		t, err = t.ParseGlob(fmt.Sprintf("%s/*.html", app.options.SharedDir+"/templates"))
-	} else {
-		t, err = t.ParseFS(web.AppFS, "runtime-shared/templates/*.html")
-	}
-
-	if err != nil {
-		return err
-	}
-	app.template = t.Lookup("webappindex.html")
-	return nil
-}
-
-// AppTemplateData is used to render the remote control page.
-type AppTemplateData struct {
-	WebRTCEnabled          bool                   `json:"webrtc_enabled"`
-	WebRTCSignalingAddress string                 `json:"webrtc_signaling_address"`
-	Env                    string                 `json:"env"`
-	Host                   string                 `json:"host"`
-	StaticHost             string                 `json:"static_host"`
-	SupportedAuthTypes     []string               `json:"supported_auth_types"`
-	AuthEntity             string                 `json:"auth_entity"`
-	BakedAuth              map[string]interface{} `json:"baked_auth"`
-}
-
-// ServeHTTP serves the UI.
-func (app *robotWebApp) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-	if true {
-		err := app.Init()
-		if err != nil {
-			app.logger.Debugf("couldn't reload template: %s", err)
-			return
-		}
-	}
-
-	var data AppTemplateData
-	data.StaticHost = app.options.StaticHost
-
-	if err := r.ParseForm(); err != nil {
-		app.logger.Debugw("failed to parse form", "error", err)
-	}
-
-	if os.Getenv("ENV") == "development" {
-		data.Env = "development"
-	} else {
-		data.Env = "production"
-	}
-
-	data.Host = app.options.FQDN
-	if app.options.PreferWebRTC && r.Form.Get("grpc") != "true" {
-		data.WebRTCEnabled = true
-	}
-
-	if app.options.Managed && hasManagedAuthHandlers(app.options.Auth.Handlers) {
-		data.BakedAuth = map[string]interface{}{
-			"authEntity": app.options.BakedAuthEntity,
-			"creds":      app.options.BakedAuthCreds,
-		}
-	} else {
-		for _, handler := range app.options.Auth.Handlers {
-			data.SupportedAuthTypes = append(data.SupportedAuthTypes, string(handler.Type))
-		}
-	}
-
-	err := app.template.Execute(w, data)
-	if err != nil {
-		app.logger.Debugf("couldn't execute web page: %s", err)
-	}
-}
-
-// Three known auth handlers (LocationSecret, External, APIKey).
-func hasManagedAuthHandlers(handlers []config.AuthHandlerConfig) bool {
-	hasLocationSecretHandler := false
-	for _, h := range handlers {
-		if h.Type == rutils.CredentialsTypeRobotLocationSecret {
-			hasLocationSecretHandler = true
-		}
-	}
-
-	if len(handlers) == 1 && hasLocationSecretHandler {
-		return true
-	}
-
-	return false
-}
 
 // A Service controls the web server for a robot.
 type Service interface {
@@ -187,6 +76,8 @@ type Service interface {
 
 	// Returns the unix socket path the module server listens on.
 	ModuleAddress() string
+
+	Stats() any
 }
 
 var internalWebServiceName = resource.NewName(
@@ -277,25 +168,21 @@ func (svc *webService) StartModule(ctx context.Context) error {
 		if err != nil {
 			return errors.WithMessage(err, "module startup failed")
 		}
-		addr, err = module.CreateSocketAddress(dir, "parent")
-		if err != nil {
-			return errors.WithMessage(err, "module startup failed")
-		}
 
-		if runtime.GOOS == "windows" {
-			// on windows, we need to craft a good enough looking URL for gRPC which
-			// means we need to take out the volume which will have the current drive
-			// be used. In a client server relationship for windows dialing, this must
-			// be known. That is, if this is a multi process UDS, then for the purposes
-			// of dialing without any resolver modifications to gRPC, they must initially
-			// agree on using the same drive.
-			addr = addr[2:]
+		if rutils.ViamTCPSockets() {
+			addr = "127.0.0.1:" + strconv.Itoa(TCPParentPort)
+			lis, err = net.Listen("tcp", addr)
+		} else {
+			addr, err = module.CreateSocketAddress(dir, "parent")
+			if err != nil {
+				return errors.WithMessage(err, "module startup failed")
+			}
+			lis, err = net.Listen("unix", addr)
 		}
-		svc.modAddr = addr
-		lis, err = net.Listen("unix", addr)
 		if err != nil {
 			return errors.WithMessage(err, "failed to listen")
 		}
+		svc.modAddr = addr
 		return nil
 	}); err != nil {
 		return err
@@ -437,37 +324,6 @@ func (svc *webService) Close(ctx context.Context) error {
 	}
 	svc.modWorkers.Wait()
 	return err
-}
-
-// installWeb prepares the given mux to be able to serve the UI for the robot.
-func (svc *webService) installWeb(mux *goji.Mux, theRobot robot.Robot, options weboptions.Options) error {
-	app := &robotWebApp{theRobot: theRobot, logger: svc.logger, options: options}
-	if err := app.Init(); err != nil {
-		return err
-	}
-
-	var staticDir http.FileSystem
-	if app.options.SharedDir != "" {
-		staticDir = http.Dir(app.options.SharedDir + "/static")
-	} else {
-		embedFS, err := fs.Sub(web.AppFS, "runtime-shared/static")
-		if err != nil {
-			return err
-		}
-		matches, err := fs.Glob(embedFS, "*.js")
-		if err != nil {
-			return err
-		}
-		if len(matches) == 0 {
-			svc.logger.Warnw("Couldn't find any static files when running RDK. Make sure to run 'make build-web' - using staticrc.viam.com")
-			app.options.StaticHost = "https://staticrc.viam.com"
-		}
-		staticDir = http.FS(embedFS)
-	}
-	mux.Handle(pat.Get("/static/*"), gziphandler.GzipHandler(http.StripPrefix("/static", http.FileServer(staticDir))))
-	mux.Handle(pat.New("/"), app)
-
-	return nil
 }
 
 // runWeb takes the given robot and options and runs the web server. This function will
@@ -748,7 +604,7 @@ func (svc *webService) initAuthHandlers(listenerTCPAddr *net.TCPAddr, options we
 		for _, handler := range options.Auth.Handlers {
 			switch handler.Type {
 			case rpc.CredentialsTypeAPIKey:
-				apiKeys := parseAPIKeys(handler)
+				apiKeys := config.ParseAPIKeys(handler)
 
 				if len(apiKeys) == 0 {
 					return nil, errors.Errorf("%q handler requires non-empty API keys", handler.Type)
@@ -785,18 +641,6 @@ func (svc *webService) initAuthHandlers(listenerTCPAddr *net.TCPAddr, options we
 	return rpcOpts, nil
 }
 
-func parseAPIKeys(handler config.AuthHandlerConfig) map[string]string {
-	apiKeys := map[string]string{}
-	for k := range handler.Config {
-		// if it is not a legacy api key indicated by "key(s)" key
-		// current api keys will follow format { [keyId]: [key] }
-		if k != "keys" && k != "key" {
-			apiKeys[k] = handler.Config.String(k)
-		}
-	}
-	return apiKeys
-}
-
 // Register every API resource grpc service here.
 func (svc *webService) initAPIResourceCollections(ctx context.Context, mod bool) error {
 	// TODO (RSDK-144): only register necessary services
@@ -821,10 +665,7 @@ func (svc *webService) initAPIResourceCollections(ctx context.Context, mod bool)
 
 // Initialize HTTP server.
 func (svc *webService) initHTTPServer(listenerTCPAddr *net.TCPAddr, options weboptions.Options) (*http.Server, error) {
-	mux, err := svc.initMux(options)
-	if err != nil {
-		return nil, err
-	}
+	mux := svc.initMux(options)
 
 	httpServer, err := utils.NewPossiblySecureHTTPServer(mux, utils.HTTPServerOptions{
 		Secure:         options.Secure,
@@ -840,11 +681,15 @@ func (svc *webService) initHTTPServer(listenerTCPAddr *net.TCPAddr, options webo
 }
 
 // Initialize multiplexer between http handlers.
-func (svc *webService) initMux(options weboptions.Options) (*goji.Mux, error) {
+func (svc *webService) initMux(options weboptions.Options) *goji.Mux {
 	mux := goji.NewMux()
-	if err := svc.installWeb(mux, svc.r, options); err != nil {
-		return nil, err
-	}
+	// Note: used by viam-agent for health checks
+	mux.HandleFunc(pat.New("/"), func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte("healthy")); err != nil {
+			svc.logger.Warnf("unable to write healthy response: %w", err)
+		}
+	})
 
 	if options.Pprof {
 		mux.HandleFunc(pat.New("/debug/pprof/"), pprof.Index)
@@ -858,6 +703,9 @@ func (svc *webService) initMux(options weboptions.Options) (*goji.Mux, error) {
 	// TODO: hide behind option
 	// TODO: accept params to display different formats
 	mux.HandleFunc(pat.New("/debug/graph"), svc.handleVisualizeResourceGraph)
+
+	// serve restart status
+	mux.HandleFunc(pat.New("/restart_status"), svc.handleRestartStatus)
 
 	prefix := "/viam"
 	addPrefix := func(h http.Handler) http.Handler {
@@ -883,7 +731,7 @@ func (svc *webService) initMux(options weboptions.Options) (*goji.Mux, error) {
 	mux.Handle(pat.New("/api/*"), corsHandler.Handler(addPrefix(svc.rpcServer.GatewayHandler())))
 	mux.Handle(pat.New("/*"), corsHandler.Handler(svc.rpcServer.GRPCHandler()))
 
-	return mux, nil
+	return mux
 }
 
 // foreignServiceHandler is a bidi-streaming RPC service handler to support custom APIs.
@@ -1067,4 +915,41 @@ func (svc *webService) foreignServiceHandler(srv interface{}, stream googlegrpc.
 		}
 		return stream.SendMsg(invokeResp)
 	}
+}
+
+type stats struct {
+	RPCServer any
+}
+
+// Stats returns ftdc data on behalf of the rpcServer and other web services.
+func (svc *webService) Stats() any {
+	// RSDK-9369: It's not ideal to block in `Stats`. But we don't today expect this to be
+	// problematic, and alternatives are more complex/expensive.
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+
+	return stats{svc.rpcServer.Stats()}
+}
+
+// RestartStatusResponse is the JSON response of the `restart_status` HTTP
+// endpoint.
+type RestartStatusResponse struct {
+	// RestartAllowed represents whether this instance of the viam-server can be
+	// safely restarted.
+	RestartAllowed bool `json:"restart_allowed"`
+}
+
+// Handles the `/restart_status` endpoint.
+func (svc *webService) handleRestartStatus(w http.ResponseWriter, r *http.Request) {
+	localRobot, isLocal := svc.r.(robot.LocalRobot)
+	if !isLocal {
+		return
+	}
+
+	response := RestartStatusResponse{RestartAllowed: localRobot.RestartAllowed()}
+
+	w.Header().Set("Content-Type", "application/json")
+	// Only log errors from encoding here. A failure to encode should never
+	// happen.
+	utils.UncheckedError(json.NewEncoder(w).Encode(response))
 }
