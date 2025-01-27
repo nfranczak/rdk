@@ -314,6 +314,7 @@ func (svc *webService) StartModule(ctx context.Context) error {
 	// TODO(PRODUCT-343): Add session manager interceptors
 
 	opts := []googlegrpc.ServerOption{
+		googlegrpc.MaxRecvMsgSize(rpc.MaxMessageSize),
 		googlegrpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(unaryInterceptors...)),
 		googlegrpc.StreamInterceptor(grpc_middleware.ChainStreamServer(streamInterceptors...)),
 		googlegrpc.UnknownServiceHandler(svc.foreignServiceHandler),

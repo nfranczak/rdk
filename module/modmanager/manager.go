@@ -996,6 +996,7 @@ func (m *module) dial() error {
 	var err error
 	conn, err := grpc.Dial( //nolint:staticcheck
 		"unix://"+m.addr,
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(rpc.MaxMessageSize)),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithChainUnaryInterceptor(
 			rdkgrpc.EnsureTimeoutUnaryClientInterceptor,

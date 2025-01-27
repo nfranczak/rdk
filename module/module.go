@@ -209,6 +209,7 @@ func NewModule(ctx context.Context, address string, logger logging.Logger) (*Mod
 		opMgr.StreamServerInterceptor,
 	}
 	opts := []grpc.ServerOption{
+		grpc.MaxRecvMsgSize(rpc.MaxMessageSize),
 		grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(unaries...)),
 		grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(streams...)),
 	}
