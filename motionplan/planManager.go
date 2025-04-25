@@ -251,6 +251,10 @@ func (pm *planManager) planAtomicWaypoints(
 		pm.logger.Infof("returning partial plan up to waypoint %d", lastOrig)
 	}
 
+	if len(resultSlices) == 0 {
+		return &rrtPlan{SimplePlan: *NewSimplePlan(nil, nil), nodes: resultSlices}, nil
+	}
+
 	// // TODO: Once TPspace also supports multiple waypoints, this needs to be updated. For now it can be false.
 	return newRRTPlan(resultSlices, pm.fs, false, nil)
 }
