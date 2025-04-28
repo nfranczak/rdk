@@ -243,9 +243,13 @@ func (mp *cBiRRTMotionPlanner) rrtBackgroundRunner(
 
 		// Solved!
 		if reachedDelta <= mp.planOpts.InputIdentDist {
+			mp.logger.Debug("hello there")
 			mp.logger.CDebugf(ctx, "CBiRRT found solution after %d iterations", i)
 			cancel()
+			mp.logger.Debug("was able to run cancel")
+
 			path := extractPath(rrt.maps.startMap, rrt.maps.goalMap, &nodePair{map1reached, map2reached}, true)
+			mp.logger.Debug("was able to returnfrom extractPath")
 			rrt.solutionChan <- &rrtSolution{steps: path, maps: rrt.maps}
 			return
 		}
