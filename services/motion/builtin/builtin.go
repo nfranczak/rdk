@@ -385,30 +385,10 @@ func (ms *builtIn) DoCommand(ctx context.Context, cmd map[string]interface{}) (m
 		}
 		plan, err := ms.plan(ctx, moveReq)
 		if err != nil {
-			return nil, err
+			return ms.recoverPartialWaypointIndex(ctx, observedLogs, resp), err
 		}
 
-		partialLogString := "returning partial plan up to waypoint"
-		partialLogs := observedLogs.FilterMessageSnippet(partialLogString).All()
-		if len(partialLogs) > 0 {
-			// Extract the waypoint number from the partial log
-			if len(partialLogs) == 1 {
-				logMsg := partialLogs[0].Message
-				// Find the waypoint number after the partial log string
-				waypointStr := strings.TrimPrefix(logMsg, partialLogString)
-				// Extract just the number
-				waypointNum, err := strconv.Atoi(strings.Split(strings.TrimSpace(waypointStr), " ")[0])
-				if err == nil {
-					resp[DoPlan+"_partialwp"] = waypointNum
-				} else {
-					ms.logger.CWarnf(ctx, "error parsing log string: %s", logMsg)
-					ms.logger.CWarn(ctx, err)
-				}
-			} else {
-				ms.logger.CWarnf(ctx, "Unexpected number of partial logs: %d", len(partialLogs))
-			}
-		}
-
+		resp = ms.recoverPartialWaypointIndex(ctx, observedLogs, resp)
 		resp[DoPlan] = plan.Trajectory()
 	}
 	if req, ok := cmd[DoExecute]; ok {
@@ -637,4 +617,28 @@ func waypointsFromRequest(
 		waypoints = append(waypoints, goalState)
 	}
 	return startState, waypoints, nil
+}
+
+func (ms *builtIn) recoverPartialWaypointIndex(ctx context.Context, observedLogs *observer.ObservedLogs, resp map[string]interface{}) map[string]interface{} {
+	partialLogString := "returning partial plan up to waypoint"
+	partialLogs := observedLogs.FilterMessageSnippet(partialLogString).All()
+	if len(partialLogs) > 0 {
+		// Extract the waypoint number from the partial log
+		if len(partialLogs) == 1 {
+			logMsg := partialLogs[0].Message
+			// Find the waypoint number after the partial log string
+			waypointStr := strings.TrimPrefix(logMsg, partialLogString)
+			// Extract just the number
+			waypointNum, err := strconv.Atoi(strings.Split(strings.TrimSpace(waypointStr), " ")[0])
+			if err == nil {
+				resp[DoPlan+"_partialwp"] = waypointNum
+			} else {
+				ms.logger.CWarnf(ctx, "error parsing log string: %s", logMsg)
+				ms.logger.CWarn(ctx, err)
+			}
+		} else {
+			ms.logger.CWarnf(ctx, "Unexpected number of partial logs: %d", len(partialLogs))
+		}
+	}
+	return resp
 }
