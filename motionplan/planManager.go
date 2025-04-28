@@ -165,9 +165,11 @@ func (pm *planManager) planAtomicWaypoints(
 		for k, v := range wp.goalState.Poses() {
 			pm.logger.Info(k, v)
 		}
+		pm.logger.Debug("done with printing which planning step we are on")
 
 		var maps *rrtMaps
 		if seedPlan != nil {
+			pm.logger.Debug("seedPlan != nil so we are going to call planToRRTGoalMap")
 			maps, err = pm.planToRRTGoalMap(seedPlan, wp)
 			if err != nil {
 				if wp.mp.opt().ReturnPartialPlan {
@@ -182,6 +184,7 @@ func (pm *planManager) planAtomicWaypoints(
 		// deal with that here.
 		// TODO: Once TPspace also supports multiple waypoints, this needs to be updated.
 		if !wp.mp.opt().useTPspace && maps == nil {
+			pm.logger.Debug("!wp.mp.opt().useTPspace && maps == nil is TRUE")
 			if seed != nil {
 				// If we have a seed, we are linking multiple waypoints, so the next one MUST start at the ending configuration of the last
 				wp.startState = &PlanState{configuration: seed}
@@ -202,6 +205,7 @@ func (pm *planManager) planAtomicWaypoints(
 			maps = planSeed.maps
 		}
 		// Plan the single waypoint, and accumulate objects which will be used to constrauct the plan after all planning has finished
+		pm.logger.Debug("about to enter planSingleAtomicWaypoint")
 		newseed, future, err := pm.planSingleAtomicWaypoint(ctx, wp, maps)
 		if err != nil {
 			// Error getting the next seed. If we can, return the partial path if requested.
