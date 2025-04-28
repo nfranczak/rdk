@@ -189,7 +189,10 @@ func (pm *planManager) planAtomicWaypoints(
 				// If we have a seed, we are linking multiple waypoints, so the next one MUST start at the ending configuration of the last
 				wp.startState = &PlanState{configuration: seed}
 			}
+			pm.logger.Debug("about to call initRRTSolutions")
 			planSeed := initRRTSolutions(ctx, wp)
+			pm.logger.Debug("returned from initRRTSolutions and have a planSeed")
+			pm.logger.Debugf("planSeed.err: %v", planSeed.err)
 			if planSeed.err != nil {
 				if wp.mp.opt().ReturnPartialPlan {
 					returnPartial = true
@@ -197,6 +200,7 @@ func (pm *planManager) planAtomicWaypoints(
 				}
 				return nil, planSeed.err
 			}
+			pm.logger.Debugf("planSeed.step: %v", planSeed.steps)
 			if planSeed.steps != nil {
 				resultPromises = append(resultPromises, &resultPromise{steps: planSeed.steps})
 				seed = planSeed.steps[len(planSeed.steps)-1].Q()
