@@ -370,7 +370,7 @@ func (ms *builtIn) DoCommand(ctx context.Context, cmd map[string]interface{}) (m
 	defer ms.mu.RUnlock()
 	resp := make(map[string]interface{}, 0)
 	if req, ok := cmd["generateWaypoints"]; ok {
-		reqMap, err := utils.AssertType[map[string]interface{}](req)
+		reqMap, err := utils.AssertType[map[string]any](req)
 		if err != nil {
 			return nil, err
 		}
@@ -388,20 +388,23 @@ func (ms *builtIn) DoCommand(ctx context.Context, cmd map[string]interface{}) (m
 		}
 		cameraPose := spatialmath.NewPoseFromProtobuf(&cameraPoseProto)
 		// -----------------------
-		fsInputsMap, _ := reqMap["fs_inputs"]
+		fsInputsInterface, err := utils.AssertType[any](reqMap["fs_inputs"])
+		if err != nil {
+			return nil, err
+		}
 		var fsInputs referenceframe.FrameSystemInputs
-		err = mapstructure.Decode(fsInputsMap, &fsInputs)
+		err = mapstructure.Decode(fsInputsInterface, &fsInputs)
 		if err != nil {
 			return nil, err
 		}
 		// -----------------------
-		regionOfInterestInterfaceSlice, err := utils.AssertType[[]interface{}](reqMap["region_of_interest"])
+		regionOfInterestInterfaceSlice, err := utils.AssertType[[]any](reqMap["region_of_interest"])
 		if err != nil {
 			return nil, err
 		}
 		regionOfInterest := []spatialmath.Geometry{}
 		for _, regionOfInterestInterface := range regionOfInterestInterfaceSlice {
-			regionOfInterestMap, err := utils.AssertType[map[string]interface{}](regionOfInterestInterface)
+			regionOfInterestMap, err := utils.AssertType[map[string]any](regionOfInterestInterface)
 			if err != nil {
 				return nil, err
 			}
