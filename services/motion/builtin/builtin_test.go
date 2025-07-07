@@ -1625,3 +1625,48 @@ func TestConfiguredDefaultExtras(t *testing.T) {
 		test.That(t, err, test.ShouldNotBeNil)
 	})
 }
+
+func TestCoveragePlannerDoCommand(t *testing.T) {
+	ctx := context.Background()
+	// need to simulate what happens when the DoCommand message is serialized/deserialized into proto
+	doOverWire := func(ms motion.Service, cmd map[string]interface{}) (map[string]interface{}, error) {
+		command, err := protoutils.StructToStructPb(cmd)
+		test.That(t, err, test.ShouldBeNil)
+		resp, err := ms.DoCommand(ctx, command.AsMap())
+		if err != nil {
+			return map[string]interface{}{}, err
+		}
+		fmt.Println("resp: ", resp)
+		respProto, err := protoutils.StructToStructPb(resp)
+		test.That(t, err, test.ShouldBeNil)
+		return respProto.AsMap(), nil
+	}
+
+	geomCfg := spatialmath.GeometryConfig{Type: "box", X: 1, Y: 2, Z: 1, Label: "iambox"}
+	geomCfgSlice := []spatialmath.GeometryConfig{geomCfg}
+
+	covReq := map[string]interface{}{
+		"camera_pose":        spatialmath.PoseToProtobuf(spatialmath.NewPoseFromPoint(r3.Vector{1, 2, 3})),
+		"area_check":         true,
+		"fs_inputs":          referenceframe.FrameSystemInputs{"dummy": {{Value: 0.1}}},
+		"region_of_interest": geomCfgSlice,
+	}
+
+	cmd := map[string]interface{}{
+		"generateWaypoints": covReq,
+	}
+
+	t.Run("test coverage request going over the wire", func(t *testing.T) {
+		ms, teardown := setupMotionServiceFromConfig(t, "../data/moving_arm.json")
+		defer teardown()
+
+		fs, err := ms.(*builtIn).fsService.FrameSystem(ctx, nil)
+		test.That(t, err, test.ShouldBeNil)
+		cmd["fs"] = fs
+		// todo: need to add deserialization of fs, gautham has this working on his branch?
+		// simulate going over the wire
+		respMap, err := doOverWire(ms, cmd)
+		test.That(t, err, test.ShouldBeNil)
+		fmt.Println("respMap: ", respMap)
+	})
+}

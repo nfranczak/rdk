@@ -16,6 +16,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
+	commonpb "go.viam.com/api/common/v1"
 	pb "go.viam.com/api/service/motion/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -368,6 +369,61 @@ func (ms *builtIn) DoCommand(ctx context.Context, cmd map[string]interface{}) (m
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
 	resp := make(map[string]interface{}, 0)
+	if req, ok := cmd["generateWaypoints"]; ok {
+		reqMap, err := utils.AssertType[map[string]interface{}](req)
+		if err != nil {
+			return nil, err
+		}
+		// -----------------------
+		areaCheck, err := utils.AssertType[bool](reqMap["area_check"])
+		if err != nil {
+			return nil, err
+		}
+		// -----------------------
+		cameraPoseInterface := reqMap["camera_pose"]
+		var cameraPoseProto commonpb.Pose
+		err = mapstructure.Decode(cameraPoseInterface, &cameraPoseProto)
+		if err != nil {
+			return nil, err
+		}
+		cameraPose := spatialmath.NewPoseFromProtobuf(&cameraPoseProto)
+		// -----------------------
+		fsInputsMap, _ := reqMap["fs_inputs"]
+		var fsInputs referenceframe.FrameSystemInputs
+		err = mapstructure.Decode(fsInputsMap, &fsInputs)
+		if err != nil {
+			return nil, err
+		}
+		// -----------------------
+		regionOfInterestInterfaceSlice, err := utils.AssertType[[]interface{}](reqMap["region_of_interest"])
+		if err != nil {
+			return nil, err
+		}
+		regionOfInterest := []spatialmath.Geometry{}
+		for _, regionOfInterestInterface := range regionOfInterestInterfaceSlice {
+			regionOfInterestMap, err := utils.AssertType[map[string]interface{}](regionOfInterestInterface)
+			if err != nil {
+				return nil, err
+			}
+
+			var geomCfg spatialmath.GeometryConfig
+			err = mapstructure.Decode(regionOfInterestMap, &geomCfg)
+			if err != nil {
+				return nil, err
+			}
+			geom, err := geomCfg.ParseConfig()
+			if err != nil {
+				return nil, err
+			}
+			regionOfInterest = append(regionOfInterest, geom)
+		}
+		// -----------------------
+
+		fmt.Println("areaCheck: ", areaCheck)
+		fmt.Println("cameraPose: ", cameraPose)
+		fmt.Println("fsInputs: ", fsInputs)
+		fmt.Println("region of interest: ", regionOfInterest[0])
+	}
 	if req, ok := cmd[DoPlan]; ok {
 		s, err := utils.AssertType[string](req)
 		if err != nil {
