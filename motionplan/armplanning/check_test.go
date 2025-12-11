@@ -113,6 +113,6 @@ func TestCheckPlan(t *testing.T) {
 	test.That(t, plan, test.ShouldNotBeNil)
 
 	// Check the plan for collisions
-	err = CheckPlan(ctx, ur20, worldState, fs, plan)
+	_, err = CheckPlan(ctx, ur20, worldState, fs, plan)
 	test.That(t, err, test.ShouldBeNil)
 }
