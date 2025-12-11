@@ -2,6 +2,7 @@ package armplanning
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	vizClient "github.com/viam-labs/motion-tools/client/client"
@@ -26,9 +27,8 @@ func CheckPlan(
 ) ([]referenceframe.Input, error) {
 	trajectory := plan.Trajectory()
 
-	// Validate that the plan has at least one element
 	if len(trajectory) < 1 {
-		return nil, nil // empty plan, nothing to check
+		return nil, errors.New("cannot check an empty plan")
 	}
 
 	// Convert trajectory to linear inputs for easier handling
@@ -52,6 +52,7 @@ func CheckPlan(
 	for _, geoms := range frameSystemGeometries {
 		for _, geom := range geoms.Geometries() {
 			// Check if this geometry belongs to checkFrame or its children
+			// TODO(miko): should be a cleaner way to do this.
 			if isPartOfFrame(geom.Label(), checkFrame.Name()) {
 				movingGeometries = append(movingGeometries, geom)
 			} else {
@@ -60,15 +61,16 @@ func CheckPlan(
 		}
 	}
 
+	// TODO(miko): If we start in collision with something that should be considered allowed throughout the remainder of the trajectory
+
 	logger := logging.NewLogger("CheckPlan")
 	checker, err := motionplan.NewConstraintChecker(
 		NewBasicPlannerOptions().CollisionBufferMM,
-		nil,
-		nil, nil,
+		nil,      // no constraints
+		nil, nil, // no start or goal poses
 		fs,
-		movingGeometries,
-		staticGeometries,
-		linearTrajectory[0],
+		movingGeometries, staticGeometries,
+		seedMap,
 		worldstate,
 		logger,
 	)
@@ -76,7 +78,7 @@ func CheckPlan(
 		return nil, err
 	}
 
-	// Resolution for interpolation (in mm)
+	// Resolution of interpolation
 	const resolution = 1
 
 	// Check each segment in the trajectory with interpolation
@@ -113,12 +115,8 @@ func CheckPlan(
 			}
 			vizClient.DrawGeometries(gifs, []string{"orange", "orange", "orange", "orange", "orange", "orange"})
 
-			if v, err := checker.CheckStateFSConstraints(ctx, state); err != nil {
-				if v > 0 {
-					return interpConfig.GetLinearizedInputs(), fmt.Errorf("collision in segment %d at interpolation step %d (between waypoint %d and %d): %w, despite value being positive", i, j, i, i+1, err)
-				} else {
-					return interpConfig.GetLinearizedInputs(), fmt.Errorf("collision in segment %d at interpolation step %d (between waypoint %d and %d): %w", i, j, i, i+1, err)
-				}
+			if _, err := checker.CheckStateFSConstraints(ctx, state); err != nil {
+				return interpConfig.GetLinearizedInputs(), fmt.Errorf("collision in segment %d at interpolation step %d (between waypoint %d and %d): %w", i, j, i, i+1, err)
 			}
 		}
 	}
