@@ -3,7 +3,6 @@ package armplanning
 import (
 	"context"
 	"fmt"
-	"time"
 
 	vizClient "github.com/viam-labs/motion-tools/client/client"
 	"go.viam.com/rdk/logging"
@@ -62,7 +61,6 @@ func CheckPlan(
 	}
 
 	logger := logging.NewLogger("CheckPlan")
-	// logger.Infof("linearTrajectory[0]: ", linearTrajectory[0])
 	checker, err := motionplan.NewConstraintChecker(
 		NewBasicPlannerOptions().CollisionBufferMM,
 		nil,
@@ -74,30 +72,55 @@ func CheckPlan(
 		worldstate,
 		logger,
 	)
+	if err != nil {
+		return nil, err
+	}
 
-	for _, t := range linearTrajectory {
-		state := &motionplan.StateFS{
-			FS:            fs,
-			Configuration: t,
+	// Resolution for interpolation (in mm)
+	const resolution = 1
+
+	// Check each segment in the trajectory with interpolation
+	for i := 0; i < len(linearTrajectory)-1; i++ {
+		segment := &motionplan.SegmentFS{
+			StartConfiguration: linearTrajectory[i],
+			EndConfiguration:   linearTrajectory[i+1],
+			FS:                 fs,
 		}
 
-		gifs, err := checkFrame.Geometries(t.GetLinearizedInputs())
+		// Interpolate and check the segment
+		interpolatedConfigurations, err := motionplan.InterpolateSegmentFS(segment, resolution)
 		if err != nil {
 			return nil, err
 		}
-		// logger.Info(t.GetLinearizedInputs())
-		vizClient.DrawGeometries(gifs, []string{"orange", "orange", "orange", "orange", "orange", "orange"})
 
-		if v, err := checker.CheckStateFSConstraints(ctx, state); err != nil {
-			if v > 0 {
-				return t.GetLinearizedInputs(), fmt.Errorf("got this error: %v, depite value being positive...", err)
-			} else {
-				return t.GetLinearizedInputs(), fmt.Errorf("got this error: %v", err)
+		// Check each interpolated configuration
+		// Skip the first configuration (j=0) for the very first segment (i=0) as it's the start configuration,
+		// which may already be in collision
+		startIdx := 0
+		if i == 0 {
+			startIdx = 1
+		}
+		for j := startIdx; j < len(interpolatedConfigurations); j++ {
+			interpConfig := interpolatedConfigurations[j]
+			state := &motionplan.StateFS{
+				FS:            fs,
+				Configuration: interpConfig,
 			}
 
-		}
-		time.Sleep(time.Millisecond * 125)
+			gifs, err := checkFrame.Geometries(interpConfig.GetLinearizedInputs())
+			if err != nil {
+				return nil, err
+			}
+			vizClient.DrawGeometries(gifs, []string{"orange", "orange", "orange", "orange", "orange", "orange"})
 
+			if v, err := checker.CheckStateFSConstraints(ctx, state); err != nil {
+				if v > 0 {
+					return interpConfig.GetLinearizedInputs(), fmt.Errorf("collision in segment %d at interpolation step %d (between waypoint %d and %d): %w, despite value being positive", i, j, i, i+1, err)
+				} else {
+					return interpConfig.GetLinearizedInputs(), fmt.Errorf("collision in segment %d at interpolation step %d (between waypoint %d and %d): %w", i, j, i, i+1, err)
+				}
+			}
+		}
 	}
 
 	return nil, nil
