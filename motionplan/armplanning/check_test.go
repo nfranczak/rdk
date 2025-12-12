@@ -9,6 +9,7 @@ import (
 	"go.viam.com/test"
 
 	"go.viam.com/rdk/logging"
+	"go.viam.com/rdk/motionplan"
 	frame "go.viam.com/rdk/referenceframe"
 	"go.viam.com/rdk/spatialmath"
 	"go.viam.com/rdk/utils"
@@ -112,7 +113,148 @@ func TestCheckPlan(t *testing.T) {
 	test.That(t, err, test.ShouldBeNil)
 	test.That(t, plan, test.ShouldNotBeNil)
 
-	// Check the plan for collisions
-	_, err = CheckPlan(ctx, ur20, worldState, fs, plan)
+	// Check the plan for collisions using the original CheckPlan
+	_, err = CheckPlan(ctx, worldState, fs, plan)
 	test.That(t, err, test.ShouldBeNil)
+
+	// Also test CheckPlanFromRequest using the original plan request
+	_, err = CheckPlanFromRequest(ctx, planRequest, plan)
+	test.That(t, err, test.ShouldBeNil)
+}
+
+// TestCheckPlanWithAllowedCollisions tests that CheckPlan correctly allows collisions that exist at the start configuration.
+func TestCheckPlanWithAllowedCollisions(t *testing.T) {
+	ctx := context.Background()
+
+	// Load UR5e kinematics
+	ur5, err := frame.ParseModelJSONFile(utils.ResolveFile("components/arm/fake/kinematics/ur5e.json"), "")
+	test.That(t, err, test.ShouldBeNil)
+
+	// Create frame system and add the arm
+	fs := frame.NewEmptyFrameSystem("test")
+	err = fs.AddFrame(ur5, fs.World())
+	test.That(t, err, test.ShouldBeNil)
+
+	// Starting configuration - use a non-home position
+	startInputs := []frame.Input{0, -1.5708, 1.5708, 0, 0, 0}
+
+	// Get geometries at start configuration to find where the forearm link is
+	startLinearInputs := frame.FrameSystemInputs{ur5.Name(): startInputs}.ToLinearInputs()
+	fsGeoms, err := frame.FrameSystemGeometriesLinearInputs(fs, startLinearInputs)
+	test.That(t, err, test.ShouldBeNil)
+
+	// Find the forearm link geometry position
+	var forearmCenter r3.Vector
+	for _, geomsInFrame := range fsGeoms {
+		for _, geom := range geomsInFrame.Geometries() {
+			if geom.Label() == "UR5e:forearm_link" {
+				forearmCenter = geom.Pose().Point()
+				break
+			}
+		}
+	}
+
+	// Create an obstacle that overlaps with the forearm link
+	obstacle, err := spatialmath.NewBox(
+		spatialmath.NewPose(
+			forearmCenter,
+			&spatialmath.OrientationVectorDegrees{OZ: 1, Theta: 0},
+		),
+		r3.Vector{X: 300, Y: 300, Z: 300},
+		"obstacle",
+	)
+	test.That(t, err, test.ShouldBeNil)
+
+	// Create world state with the obstacle
+	worldState, err := frame.NewWorldState(
+		[]*frame.GeometriesInFrame{
+			frame.NewGeometriesInFrame(frame.World, []spatialmath.Geometry{obstacle}),
+		},
+		nil,
+	)
+	test.That(t, err, test.ShouldBeNil)
+
+	// Test 1: Plan where robot doesn't move - collision at start should be allowed throughout
+	// Create a trajectory with the same configuration repeated (no movement)
+	trajectoryNoMove := motionplan.Trajectory{
+		{ur5.Name(): startInputs},
+		{ur5.Name(): startInputs}, // Same as start
+	}
+
+	planNoMove := &testPlan{trajectory: trajectoryNoMove}
+
+	// This should pass because the collision exists at index 0 and persists (same geometry pairs)
+	_, err = CheckPlan(ctx, worldState, fs, planNoMove)
+	test.That(t, err, test.ShouldBeNil)
+}
+
+// TestCheckPlanFromRequest tests the convenience wrapper that takes a PlanRequest.
+func TestCheckPlanFromRequest(t *testing.T) {
+	ctx := context.Background()
+
+	// Load UR5e kinematics
+	ur5, err := frame.ParseModelJSONFile(utils.ResolveFile("components/arm/fake/kinematics/ur5e.json"), "")
+	test.That(t, err, test.ShouldBeNil)
+
+	// Create frame system and add the arm
+	fs := frame.NewEmptyFrameSystem("test")
+	err = fs.AddFrame(ur5, fs.World())
+	test.That(t, err, test.ShouldBeNil)
+
+	// Create a simple trajectory
+	startInputs := []frame.Input{0, 0, 0, 0, 0, 0}
+	goalInputs := []frame.Input{0.5, 0, 0, 0, 0, 0}
+	trajectory := motionplan.Trajectory{
+		{ur5.Name(): startInputs},
+		{ur5.Name(): goalInputs},
+	}
+
+	// Create a plan
+	plan := &testPlan{trajectory: trajectory}
+
+	// Create a PlanRequest
+	planRequest := &PlanRequest{
+		FrameSystem: fs,
+		WorldState:  &frame.WorldState{},
+	}
+
+	// Test CheckPlanFromRequest - should succeed with no obstacles
+	_, err = CheckPlanFromRequest(ctx, planRequest, plan)
+	test.That(t, err, test.ShouldBeNil)
+
+	// Test with nil request - should fail
+	_, err = CheckPlanFromRequest(ctx, nil, plan)
+	test.That(t, err, test.ShouldNotBeNil)
+	test.That(t, err.Error(), test.ShouldContainSubstring, "plan request cannot be nil")
+
+	// Test with nil frame system - should fail
+	badRequest := &PlanRequest{
+		FrameSystem: nil,
+		WorldState:  &frame.WorldState{},
+	}
+	_, err = CheckPlanFromRequest(ctx, badRequest, plan)
+	test.That(t, err, test.ShouldNotBeNil)
+	test.That(t, err.Error(), test.ShouldContainSubstring, "frame system")
+
+	// Test with nil world state - should fail
+	badRequest2 := &PlanRequest{
+		FrameSystem: fs,
+		WorldState:  nil,
+	}
+	_, err = CheckPlanFromRequest(ctx, badRequest2, plan)
+	test.That(t, err, test.ShouldNotBeNil)
+	test.That(t, err.Error(), test.ShouldContainSubstring, "world state")
+}
+
+// testPlan is a simple implementation of motionplan.Plan for testing.
+type testPlan struct {
+	trajectory motionplan.Trajectory
+}
+
+func (p *testPlan) Trajectory() motionplan.Trajectory {
+	return p.trajectory
+}
+
+func (p *testPlan) Path() motionplan.Path {
+	return nil
 }

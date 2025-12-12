@@ -201,9 +201,19 @@ type collisionGraph struct {
 	minDistancePair string
 }
 
-// newCollisionGraph instantiates a collisionGraph object and checks for collisions between the x and y sets of geometries
+// NewCollisionGraphFromGeometries instantiates a collisionGraph object and checks for collisions between the x and y sets of geometries
 // collisions that are reported in the reference CollisionSystem argument will be ignored and not stored as edges in the graph.
 // if the set y is nil, the graph will be instantiated with y = x.
+func NewCollisionGraphFromGeometries(fs *referenceframe.FrameSystem,
+	x, y []spatial.Geometry,
+	reference *collisionGraph,
+	reportDistances bool,
+	collisionBufferMM float64,
+) (cg *collisionGraph, err error) {
+	return newCollisionGraph(fs, x, y, reference, reportDistances, collisionBufferMM)
+}
+
+// newCollisionGraph is the internal implementation of NewCollisionGraphFromGeometries.
 func newCollisionGraph(fs *referenceframe.FrameSystem,
 	x, y []spatial.Geometry,
 	reference *collisionGraph,
@@ -294,6 +304,11 @@ func (cg *collisionGraph) collisionBetween(name1, name2 string, collisionBufferM
 		return distance <= collisionBufferMM
 	}
 	return false
+}
+
+// Collisions returns a list of all the collisions present in the collisionGraph.
+func (cg *collisionGraph) Collisions(collisionBufferMM float64) []Collision {
+	return cg.collisions(collisionBufferMM)
 }
 
 // collisions returns a list of all the collisions present in the collisionGraph.
