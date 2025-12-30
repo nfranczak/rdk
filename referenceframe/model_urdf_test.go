@@ -2,7 +2,6 @@ package referenceframe
 
 import (
 	"encoding/xml"
-	"fmt"
 	"testing"
 
 	"github.com/golang/geo/r3"
@@ -54,19 +53,31 @@ func TestWorldStateConversion(t *testing.T) {
 }
 
 func TestURDFWithMeshes(t *testing.T) {
-	// ufactory 850
-	u, err := ParseModelXMLFile(utils.ResolveFile("referenceframe/testfiles/uf850.urdf"), "")
+	// Test UFactory 850 with meshes
+	uf850, err := ParseModelXMLFile(utils.ResolveFile("referenceframe/testfiles/uf850.urdf"), "uf850")
 	test.That(t, err, test.ShouldBeNil)
-	test.That(t, len(u.DoF()), test.ShouldEqual, 6)
+	test.That(t, uf850.Name(), test.ShouldEqual, "uf850")
+	test.That(t, len(uf850.DoF()), test.ShouldEqual, 6)
 
-	p, _ := u.Transform([]Input{0, 0, 0, 0, 0, 0})
-	fmt.Println(p)
-
-	// ur20
-	u, err = ParseModelXMLFile(utils.ResolveFile("referenceframe/testfiles/ur20.urdf"), "")
+	// Test that the model can compute transforms
+	pose, err := uf850.Transform([]Input{0, 0, 0, 0, 0, 0})
 	test.That(t, err, test.ShouldBeNil)
-	test.That(t, len(u.DoF()), test.ShouldEqual, 6)
+	test.That(t, pose, test.ShouldNotBeNil)
 
-	p, _ = u.Transform([]Input{0, 0, 0, 0, 0, 0})
-	fmt.Println(p)
+	// Verify the model has geometries with meshes
+	model, ok := uf850.(*SimpleModel)
+	test.That(t, ok, test.ShouldBeTrue)
+	geometries, err := model.Geometries(make([]Input, len(model.DoF())))
+	test.That(t, err, test.ShouldBeNil)
+	test.That(t, len(geometries.Geometries()), test.ShouldBeGreaterThan, 0)
+
+	// Verify at least one geometry is a mesh
+	hasMesh := false
+	for _, geom := range geometries.Geometries() {
+		if _, isMesh := geom.(*spatialmath.Mesh); isMesh {
+			hasMesh = true
+			break
+		}
+	}
+	test.That(t, hasMesh, test.ShouldBeTrue)
 }

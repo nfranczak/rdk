@@ -1,7 +1,6 @@
 package referenceframe
 
 import (
-	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"math"
@@ -83,6 +82,11 @@ func UnmarshalModelXML(xmlData []byte, modelName string) (*ModelConfigJSON, erro
 	return unmarshalModelXMLWithBasePath(xmlData, modelName, "")
 }
 
+// unmarshalModelXMLWithBasePath converts URDF XML data to ModelConfigJSON.
+// The basePath parameter is used to resolve relative mesh file paths referenced in the URDF.
+// When a URDF contains mesh geometries with relative paths (e.g., "meshes/base.stl"), they
+// are resolved relative to basePath. Absolute paths are used as-is.
+// The resolved absolute paths are stored in the mesh's sourcePath field for later serialization.
 func unmarshalModelXMLWithBasePath(xmlData []byte, modelName, basePath string) (*ModelConfigJSON, error) {
 	// Unmarshal into a URDF ModelConfig
 	urdf := &ModelConfigURDF{}
@@ -209,25 +213,16 @@ func unmarshalModelXMLWithBasePath(xmlData []byte, modelName, basePath string) (
 	for _, link := range links {
 		linkSlice = append(linkSlice, *link)
 	}
-	modelConfig := &ModelConfigJSON{
+	return &ModelConfigJSON{
 		Name:         modelName,
 		KinParamType: "SVA",
 		Links:        linkSlice,
 		Joints:       joints,
-	}
-
-	// Marshal to JSON so mesh paths (now absolute) are preserved when sent over RPC
-	jsonData, err := json.Marshal(modelConfig)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to marshal model config to JSON")
-	}
-
-	modelConfig.OriginalFile = &ModelFile{
-		Bytes:     jsonData,
-		Extension: "json",
-	}
-
-	return modelConfig, nil
+		OriginalFile: &ModelFile{
+			Bytes:     xmlData,
+			Extension: "urdf",
+		},
+	}, nil
 }
 
 // ParseModelXMLFile will read a given file and parse the contained URDF XML data into an equivalent Model.

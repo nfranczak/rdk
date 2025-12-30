@@ -67,7 +67,7 @@ const (
 	SphereType  = GeometryType("sphere")
 	CapsuleType = GeometryType("capsule")
 	PointType   = GeometryType("point")
-	MeshType   = GeometryType("mesh")
+	MeshType    = GeometryType("mesh")
 )
 
 // GeometryConfig specifies the format of geometries specified through JSON configuration files.
@@ -120,7 +120,7 @@ func NewGeometryConfig(g Geometry) (*GeometryConfig, error) {
 	case *Mesh:
 		config.Type = MeshType
 		config.Label = gType.label
-		config.MeshFilePath = gType.label // Store the file path from the label
+		config.MeshFilePath = gType.sourcePath // Store the source file path
 	default:
 		return nil, fmt.Errorf("%w %s", errGeometryTypeUnsupported, fmt.Sprintf("%T", gType))
 	}

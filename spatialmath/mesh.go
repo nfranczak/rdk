@@ -24,9 +24,14 @@ import (
 // The set of supported mesh file types.
 type meshType string
 
-const plyType = meshType("ply")
+const (
+	plyType = meshType("ply")
+	stlType = meshType("stl")
+)
 
 // Mesh is a set of triangles at some pose. Triangle points are in the frame of the mesh.
+// Meshes can be loaded from PLY or STL files and are stored in their native format.
+// The mesh maintains both the parsed triangles and the raw file bytes for efficient serialization.
 type Mesh struct {
 	pose      Pose
 	triangles []*Triangle
@@ -35,6 +40,11 @@ type Mesh struct {
 	// information used for encoding to protobuf
 	fileType meshType
 	rawBytes []byte
+
+	// sourcePath tracks the original file path for meshes loaded from disk.
+	// This is separate from label to allow semantic naming independent of file locations.
+	// Used for serialization (e.g., when converting back to URDF) and debugging.
+	sourcePath string
 }
 
 // NewMesh creates a mesh from the given triangles and pose.
@@ -66,7 +76,13 @@ func NewMeshFromPLYFile(path string) (*Mesh, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newMeshFromBytes(NewZeroPose(), bytes, path)
+	mesh, err := newMeshFromBytes(NewZeroPose(), bytes, "")
+	if err != nil {
+		return nil, err
+	}
+	// Set the source path since this was loaded from a file
+	mesh.sourcePath = path
+	return mesh, nil
 }
 
 func newMeshFromBytes(pose Pose, data []byte, label string) (mesh *Mesh, err error) {
@@ -97,7 +113,7 @@ func newMeshFromBytes(pose Pose, data []byte, label string) (mesh *Mesh, err err
 			if err != nil {
 				return nil, err
 			}
-			pts = append(pts, r3.Vector{X: x * 1000, Y: y * 1000, Z: z * 1000})
+			pts = append(pts, r3.Vector{X: utils.MetersToMM(x), Y: utils.MetersToMM(y), Z: utils.MetersToMM(z)})
 		}
 		if len(pts) != 3 {
 			return nil, errors.New("triangle did not have three points")
@@ -114,6 +130,10 @@ func newMeshFromBytes(pose Pose, data []byte, label string) (mesh *Mesh, err err
 	}, nil
 }
 
+// NewMeshFromSTLFile loads a mesh from an STL file (binary or ASCII format).
+// STL files are assumed to use meters as the unit of measurement and are converted to millimeters.
+// The file path is stored in the mesh's sourcePath field for later serialization.
+// Both binary and ASCII STL formats are supported and automatically detected.
 func NewMeshFromSTLFile(path string) (*Mesh, error) {
 	//nolint:gosec
 	file, err := os.Open(path)
@@ -126,7 +146,13 @@ func NewMeshFromSTLFile(path string) (*Mesh, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newMeshFromSTLBytes(NewZeroPose(), bytes, path)
+	mesh, err := newMeshFromSTLBytes(NewZeroPose(), bytes, "")
+	if err != nil {
+		return nil, err
+	}
+	// Set the source path since this was loaded from a file
+	mesh.sourcePath = path
+	return mesh, nil
 }
 
 func newMeshFromSTLBytes(pose Pose, data []byte, label string) (*Mesh, error) {
@@ -149,19 +175,14 @@ func newMeshFromSTLBytes(pose Pose, data []byte, label string) (*Mesh, error) {
 		}
 	}
 
-	// Convert the triangles to PLY format for storage
-	mesh := &Mesh{
+	// Store the STL data natively - no conversion needed
+	return &Mesh{
 		pose:      pose,
 		triangles: triangles,
 		label:     label,
-	}
-
-	// Convert to PLY for protobuf storage
-	plyBytes := mesh.TrianglesToPLYBytes(false) // THIS SEEMS SUSPICIOUS TO ME
-	mesh.fileType = plyType
-	mesh.rawBytes = plyBytes
-
-	return mesh, nil
+		fileType:  stlType,
+		rawBytes:  data, // Store the original STL bytes
+	}, nil
 }
 
 // parseSTLBinary parses binary STL format.
@@ -199,25 +220,25 @@ func parseSTLBinary(data []byte) ([]*Triangle, error) {
 		// Skip normal vector (12 bytes)
 		offset += 12
 
-		// Read three vertices
+		// Read three vertices (STL files use meters, convert to millimeters)
 		v1 := r3.Vector{
-			X: float64(math.Float32frombits(uint32(data[offset]) | uint32(data[offset+1])<<8 | uint32(data[offset+2])<<16 | uint32(data[offset+3])<<24)) * 1000,
-			Y: float64(math.Float32frombits(uint32(data[offset+4]) | uint32(data[offset+5])<<8 | uint32(data[offset+6])<<16 | uint32(data[offset+7])<<24)) * 1000,
-			Z: float64(math.Float32frombits(uint32(data[offset+8]) | uint32(data[offset+9])<<8 | uint32(data[offset+10])<<16 | uint32(data[offset+11])<<24)) * 1000,
+			X: utils.MetersToMM(float64(math.Float32frombits(uint32(data[offset]) | uint32(data[offset+1])<<8 | uint32(data[offset+2])<<16 | uint32(data[offset+3])<<24))),
+			Y: utils.MetersToMM(float64(math.Float32frombits(uint32(data[offset+4]) | uint32(data[offset+5])<<8 | uint32(data[offset+6])<<16 | uint32(data[offset+7])<<24))),
+			Z: utils.MetersToMM(float64(math.Float32frombits(uint32(data[offset+8]) | uint32(data[offset+9])<<8 | uint32(data[offset+10])<<16 | uint32(data[offset+11])<<24))),
 		}
 		offset += 12
 
 		v2 := r3.Vector{
-			X: float64(math.Float32frombits(uint32(data[offset]) | uint32(data[offset+1])<<8 | uint32(data[offset+2])<<16 | uint32(data[offset+3])<<24)) * 1000,
-			Y: float64(math.Float32frombits(uint32(data[offset+4]) | uint32(data[offset+5])<<8 | uint32(data[offset+6])<<16 | uint32(data[offset+7])<<24)) * 1000,
-			Z: float64(math.Float32frombits(uint32(data[offset+8]) | uint32(data[offset+9])<<8 | uint32(data[offset+10])<<16 | uint32(data[offset+11])<<24)) * 1000,
+			X: utils.MetersToMM(float64(math.Float32frombits(uint32(data[offset]) | uint32(data[offset+1])<<8 | uint32(data[offset+2])<<16 | uint32(data[offset+3])<<24))),
+			Y: utils.MetersToMM(float64(math.Float32frombits(uint32(data[offset+4]) | uint32(data[offset+5])<<8 | uint32(data[offset+6])<<16 | uint32(data[offset+7])<<24))),
+			Z: utils.MetersToMM(float64(math.Float32frombits(uint32(data[offset+8]) | uint32(data[offset+9])<<8 | uint32(data[offset+10])<<16 | uint32(data[offset+11])<<24))),
 		}
 		offset += 12
 
 		v3 := r3.Vector{
-			X: float64(math.Float32frombits(uint32(data[offset]) | uint32(data[offset+1])<<8 | uint32(data[offset+2])<<16 | uint32(data[offset+3])<<24)) * 1000,
-			Y: float64(math.Float32frombits(uint32(data[offset+4]) | uint32(data[offset+5])<<8 | uint32(data[offset+6])<<16 | uint32(data[offset+7])<<24)) * 1000,
-			Z: float64(math.Float32frombits(uint32(data[offset+8]) | uint32(data[offset+9])<<8 | uint32(data[offset+10])<<16 | uint32(data[offset+11])<<24)) * 1000,
+			X: utils.MetersToMM(float64(math.Float32frombits(uint32(data[offset]) | uint32(data[offset+1])<<8 | uint32(data[offset+2])<<16 | uint32(data[offset+3])<<24))),
+			Y: utils.MetersToMM(float64(math.Float32frombits(uint32(data[offset+4]) | uint32(data[offset+5])<<8 | uint32(data[offset+6])<<16 | uint32(data[offset+7])<<24))),
+			Z: utils.MetersToMM(float64(math.Float32frombits(uint32(data[offset+8]) | uint32(data[offset+9])<<8 | uint32(data[offset+10])<<16 | uint32(data[offset+11])<<24))),
 		}
 		offset += 12
 
@@ -276,7 +297,7 @@ func parseSTLASCII(data []byte) ([]*Triangle, error) {
 			}
 
 			// Convert from meters to millimeters
-			vertices = append(vertices, r3.Vector{X: x * 1000, Y: y * 1000, Z: z * 1000})
+			vertices = append(vertices, r3.Vector{X: utils.MetersToMM(x), Y: utils.MetersToMM(y), Z: utils.MetersToMM(z)})
 
 			// If we have 3 vertices, create a triangle
 			if len(vertices) == 3 {
@@ -298,6 +319,8 @@ func NewMeshFromProto(pose Pose, m *commonpb.Mesh, label string) (*Mesh, error) 
 	switch m.ContentType {
 	case string(plyType):
 		return newMeshFromBytes(pose, m.Mesh, label)
+	case string(stlType):
+		return newMeshFromSTLBytes(pose, m.Mesh, label)
 	default:
 		return nil, fmt.Errorf("unsupported Mesh type: %s", m.ContentType)
 	}
@@ -338,11 +361,12 @@ func (m *Mesh) Triangles() []*Triangle {
 func (m *Mesh) Transform(pose Pose) Geometry {
 	// Triangle points are in frame of mesh, like the corners of a box, so no need to transform them
 	return &Mesh{
-		pose:      Compose(pose, m.pose),
-		triangles: m.triangles,
-		label:     m.label,
-		fileType:  m.fileType,
-		rawBytes:  m.rawBytes,
+		pose:       Compose(pose, m.pose),
+		triangles:  m.triangles,
+		label:      m.label,
+		fileType:   m.fileType,
+		rawBytes:   m.rawBytes,
+		sourcePath: m.sourcePath,
 	}
 }
 
@@ -600,6 +624,16 @@ func (m *Mesh) SetLabel(label string) {
 // Label returns the name of the mesh.
 func (m *Mesh) Label() string {
 	return m.label
+}
+
+// SetSourcePath sets the source file path for the mesh.
+func (m *Mesh) SetSourcePath(path string) {
+	m.sourcePath = path
+}
+
+// SourcePath returns the source file path of the mesh, if it was loaded from a file.
+func (m *Mesh) SourcePath() string {
+	return m.sourcePath
 }
 
 // ToPoints returns a vector of points that together represent a point cloud of the Mesh.

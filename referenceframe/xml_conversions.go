@@ -45,6 +45,7 @@ type mesh struct {
 }
 
 func newCollision(g spatialmath.Geometry) (*collision, error) {
+	fmt.Printf("hello from new collision")
 	cfg, err := spatialmath.NewGeometryConfig(g)
 	if err != nil {
 		return nil, err
@@ -59,13 +60,16 @@ func newCollision(g spatialmath.Geometry) (*collision, error) {
 	case spatialmath.SphereType:
 		urdf.Geometry.Sphere = &sphere{Radius: utils.MMToMeters(cfg.R)}
 	case spatialmath.MeshType:
-		// For mesh, we use the label as the filename if it looks like a path
-		// Otherwise, we can't serialize back to URDF without more context
-		if g.Label() != "" {
-			urdf.Geometry.Mesh = &mesh{Filename: g.Label()}
-		} else {
-			return nil, errors.New("mesh geometry must have a label (filename) to be serialized to URDF")
+		// For mesh, we use the sourcePath to get the filename
+		meshGeom, ok := g.(*spatialmath.Mesh)
+		if !ok {
+			return nil, errors.New("failed to cast geometry to Mesh")
 		}
+		sourcePath := meshGeom.SourcePath()
+		if sourcePath == "" {
+			return nil, errors.New("mesh geometry must have a source path to be serialized to URDF")
+		}
+		urdf.Geometry.Mesh = &mesh{Filename: sourcePath}
 	default:
 		return nil, fmt.Errorf("%w %s", errGeometryTypeUnsupported, fmt.Sprintf("%T", cfg.Type))
 	}
@@ -76,6 +80,11 @@ func (c *collision) toGeometry() (spatialmath.Geometry, error) {
 	return c.toGeometryWithBasePath("")
 }
 
+// toGeometryWithBasePath converts a URDF collision element to a spatialmath.Geometry.
+// For mesh geometries, the basePath is used to resolve relative file paths.
+// Supports both regular relative paths and package:// URIs commonly used in ROS URDFs.
+// Mesh files can be in STL or PLY format and are loaded from disk.
+// The absolute path to the mesh file is stored in the mesh's sourcePath field.
 func (c *collision) toGeometryWithBasePath(basePath string) (spatialmath.Geometry, error) {
 	switch {
 	case c.Geometry.Box != nil:
@@ -88,9 +97,14 @@ func (c *collision) toGeometryWithBasePath(basePath string) (spatialmath.Geometr
 	case c.Geometry.Sphere != nil:
 		return spatialmath.NewSphere(c.Origin.Parse(), utils.MetersToMM(c.Geometry.Sphere.Radius), "")
 	case c.Geometry.Mesh != nil:
-		// Resolve mesh file path relative to URDF base directory
+		// Resolve mesh file path
 		meshPath := c.Geometry.Mesh.Filename
-		if basePath != "" && !filepath.IsAbs(meshPath) {
+
+		// Handle package:// URIs (e.g., package://ur_description/meshes/base.stl)
+		if strings.HasPrefix(meshPath, "package://") {
+			meshPath = resolvePackageURI(meshPath, basePath)
+		} else if basePath != "" && !filepath.IsAbs(meshPath) {
+			// Handle regular relative paths
 			meshPath = filepath.Join(basePath, meshPath)
 		}
 
@@ -112,13 +126,46 @@ func (c *collision) toGeometryWithBasePath(basePath string) (spatialmath.Geometr
 			return nil, errors.Wrapf(err, "failed to load mesh from %s", meshPath)
 		}
 
-		// Set label to the absolute mesh path so it can be reloaded later
-		mesh.SetLabel(meshPath)
+		// Store the source path for serialization
+		mesh.SetSourcePath(meshPath)
 		// Apply the collision origin transform
 		return mesh.Transform(c.Origin.Parse()).(*spatialmath.Mesh), nil
 	default:
 		return nil, errors.New("couldn't parse xml: no geometry defined")
 	}
+}
+
+// resolvePackageURI resolves a package:// URI to a filesystem path.
+// Package URIs follow the format: package://package_name/path/to/file
+// The package name is stripped and only the path within the package is used.
+// For example, "package://ur_description/meshes/base.stl" with basePath "/home/user/ur_description"
+// resolves to "/home/user/ur_description/meshes/base.stl" (not /home/user/ur_description/ur_description/meshes/base.stl)
+func resolvePackageURI(uri, basePath string) string {
+	const packagePrefix = "package://"
+	if !strings.HasPrefix(uri, packagePrefix) {
+		return uri
+	}
+
+	// Remove the package:// prefix
+	path := strings.TrimPrefix(uri, packagePrefix)
+
+	// Split on first '/' to separate package name from path within package
+	// e.g., "ur_description/meshes/base.stl" -> ["ur_description", "meshes/base.stl"]
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) < 2 {
+		// No path after package name, return as-is
+		return path
+	}
+
+	// Use only the path within the package (strip the package name)
+	pathInPackage := parts[1]
+
+	// Resolve relative to basePath if provided
+	if basePath != "" {
+		return filepath.Join(basePath, pathInPackage)
+	}
+
+	return pathInPackage
 }
 
 type frame struct {
