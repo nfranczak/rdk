@@ -11,7 +11,9 @@ import (
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/motionplan"
 	"go.viam.com/rdk/motionplan/ik"
+	"go.viam.com/rdk/pointcloud"
 	"go.viam.com/rdk/referenceframe"
+	"go.viam.com/rdk/spatialmath"
 )
 
 type planContext struct {
@@ -118,6 +120,12 @@ func newPlanSegmentContext(ctx context.Context, pc *planContext, start *referenc
 	if err != nil {
 		return nil, err
 	}
+	if pc.planOpts.MeshesAsOctrees {
+		frameSystemGeometries, err = convertMeshesToOctreesInGeometriesMap(frameSystemGeometries)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	movingRobotGeometries, staticRobotGeometries := psc.motionChains.geometries(pc.fs, frameSystemGeometries)
 
@@ -137,6 +145,28 @@ func newPlanSegmentContext(ctx context.Context, pc *planContext, start *referenc
 	}
 
 	return psc, nil
+}
+
+func convertMeshesToOctreesInGeometriesMap(
+	frameSystemGeometries map[string]*referenceframe.GeometriesInFrame,
+) (map[string]*referenceframe.GeometriesInFrame, error) {
+	converted := make(map[string]*referenceframe.GeometriesInFrame, len(frameSystemGeometries))
+	for name, geomsInFrame := range frameSystemGeometries {
+		geometries := geomsInFrame.Geometries()
+		convertedGeoms := make([]spatialmath.Geometry, 0, len(geometries))
+		for _, geometry := range geometries {
+			if mesh, ok := geometry.(*spatialmath.Mesh); ok {
+				octree, err := pointcloud.NewFromMesh(mesh)
+				if err != nil {
+					return nil, err
+				}
+				geometry = octree
+			}
+			convertedGeoms = append(convertedGeoms, geometry)
+		}
+		converted[name] = referenceframe.NewGeometriesInFrame(geomsInFrame.Parent(), convertedGeoms)
+	}
+	return converted, nil
 }
 
 func (psc *planSegmentContext) checkPath(ctx context.Context, start, end *referenceframe.LinearInputs, checkFinal bool) error {
