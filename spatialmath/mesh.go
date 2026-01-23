@@ -52,7 +52,7 @@ func NewMesh(pose Pose, triangles []*Triangle, label string) *Mesh {
 		pose:      pose,
 		triangles: triangles,
 		label:     label,
-		bvh:       buildBVH(triangles),
+		bvh:       buildBVHFromTriangles(triangles),
 	}
 
 	// Convert triangles to PLY for protobuf
@@ -147,7 +147,7 @@ func newMeshFromBytes(pose Pose, data []byte, label string) (mesh *Mesh, err err
 		label:     label,
 		fileType:  plyType,
 		rawBytes:  data,
-		bvh:       buildBVH(triangles),
+		bvh:       buildBVHFromTriangles(triangles),
 	}, nil
 }
 
@@ -201,7 +201,7 @@ func newMeshFromSTLBytes(pose Pose, data []byte, label string) (*Mesh, error) {
 		label:     label,
 		fileType:  stlType,
 		rawBytes:  data,
-		bvh:       buildBVH(triangles),
+		bvh:       buildBVHFromTriangles(triangles),
 	}, nil
 }
 
@@ -296,46 +296,20 @@ func (m *Mesh) Transform(pose Pose) Geometry {
 // geometry. If there is a collision, a negative number is returned.
 func (m *Mesh) CollidesWith(g Geometry, collisionBufferMM float64) (bool, float64, error) {
 	switch other := g.(type) {
-	case *box:
-		// Mesh-ifying the box misses the case where the box encompasses a mesh triangle without its surface intersecting a triangle.
-		encompassed := m.boxIntersectsVertex(other)
-		if encompassed {
-			return true, -1, nil
-		}
-		// Convert box to mesh and check triangle collisions
-		collides, dist := m.collidesWithMesh(other.toMesh(), collisionBufferMM)
-		if collides {
-			return true, -1, nil
-		}
-		return false, dist, nil
-	case *capsule:
-		// Use existing capsule vs mesh distance check
-		// TODO: This is inefficient! Replace with a function with a short-circuit.
-		dist := capsuleVsMeshDistance(other, m)
-		if dist <= collisionBufferMM {
-			return true, -1, nil
-		}
-		return false, dist, nil
-	case *point:
-		collides, dist := m.collidesWithSphere(&sphere{pose: NewPoseFromPoint(other.position)}, collisionBufferMM)
-		if collides {
-			return true, -1, nil
-		}
-		return false, dist, nil
-	case *sphere:
-		collides, dist := m.collidesWithSphere(other, collisionBufferMM)
-		if collides {
-			return true, -1, nil
-		}
-		return false, dist, nil
 	case *Mesh:
+		// Use optimized BVH-to-BVH traversal for mesh-mesh collision
 		collides, dist := m.collidesWithMesh(other, collisionBufferMM)
 		if collides {
 			return true, -1, nil
 		}
 		return false, dist, nil
 	default:
-		return true, math.Inf(1), newCollisionTypeUnsupportedError(m, g)
+		// Use BVH acceleration for all other geometry types
+		collides, dist := bvhCollidesWithGeometry(m.bvh, m.pose, g, collisionBufferMM)
+		if collides {
+			return true, -1, nil
+		}
+		return false, dist, nil
 	}
 }
 
@@ -363,201 +337,37 @@ func (m *Mesh) EncompassedBy(g Geometry) (bool, error) {
 // DistanceFrom returns the minimum distance between this mesh and another geometry.
 func (m *Mesh) DistanceFrom(g Geometry) (float64, error) {
 	switch other := g.(type) {
-	case *box:
-		// Mesh-ifying the box misses the case where the box encompasses a mesh triangle without its surface intersecting a triangle.
-		encompassed := m.boxIntersectsVertex(other)
-		if encompassed {
-			return 0, nil
-		}
-		return m.distanceFromMesh(other.toMesh()), nil
-	case *capsule:
-		return capsuleVsMeshDistance(other, m), nil
-	case *point:
-		return m.distanceFromSphere(&sphere{pose: NewPoseFromPoint(other.position)}), nil
-	case *sphere:
-		return m.distanceFromSphere(other), nil
 	case *Mesh:
+		// Use optimized BVH-to-BVH traversal for mesh-mesh distance
 		return m.distanceFromMesh(other), nil
 	default:
-		return math.Inf(-1), newCollisionTypeUnsupportedError(m, g)
+		// Use BVH acceleration for all other geometry types
+		return bvhDistanceFromGeometry(m.bvh, m.pose, g), nil
 	}
-}
-
-// Returns true if any triangle vertex of the mesh intersects the box.
-func (m *Mesh) boxIntersectsVertex(b *box) bool {
-	// Use map to deduplicate vertices
-	pointMap := make(map[string]r3.Vector)
-	// Add all triangle vertices, formatting as a string for map deduplication
-	for _, tri := range m.triangles {
-		for _, pt := range tri.Points() {
-			// If this is a shared vertex we can skip the math after the first time
-			key := fmt.Sprintf("%.10f,%.10f,%.10f", pt.X, pt.Y, pt.Z)
-			if _, ok := pointMap[key]; ok {
-				continue
-			}
-			pointMap[key] = pt
-			worldPt := Compose(m.pose, NewPoseFromPoint(pt)).Point()
-			c, _ := pointVsBoxCollision(worldPt, b, defaultCollisionBufferMM)
-			if c {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func (m *Mesh) distanceFromSphere(s *sphere) float64 {
-	pt := s.pose.Point()
-	minDist := math.Inf(1)
-	// Transform all triangles to world space once
-	for _, tri := range m.triangles {
-		closestPt := ClosestPointTrianglePoint(tri.Transform(m.pose), pt)
-		dist := closestPt.Sub(pt).Norm() - s.radius
-		if dist < minDist {
-			minDist = dist
-		}
-	}
-	return minDist
+	// All meshes have BVH, so use BVH acceleration
+	return bvhDistanceFromGeometry(m.bvh, m.pose, s)
 }
 
 func (m *Mesh) collidesWithSphere(s *sphere, buffer float64) (bool, float64) {
-	pt := s.pose.Point()
-	minDist := math.Inf(1)
-	// Transform all triangles to world space once
-	for _, tri := range m.triangles {
-		closestPt := ClosestPointTrianglePoint(tri.Transform(m.pose), pt)
-		dist := closestPt.Sub(pt).Norm() - s.radius
-		if dist <= buffer {
-			return true, -1
-		}
-		if dist < minDist {
-			minDist = dist
-		}
-	}
-	return false, minDist
+	// All meshes have BVH, so use BVH acceleration
+	return bvhCollidesWithGeometry(m.bvh, m.pose, s, buffer)
 }
 
 // collidesWithMesh checks if this mesh collides with another mesh.
-// Uses BVH acceleration when available for O(log n * log m) performance instead of O(n*m).
+// Uses BVH acceleration for O(log n * log m) performance instead of O(n*m).
 func (m *Mesh) collidesWithMesh(other *Mesh, collisionBufferMM float64) (bool, float64) {
-	// Use BVH-accelerated collision if both meshes have BVH
-	if m.bvh != nil && other.bvh != nil {
-		return bvhCollidesWithBVH(m.bvh, other.bvh, m.pose, other.pose, collisionBufferMM)
-	}
-
-	// Fallback to brute-force O(n*m) check
-	return m.collidesWithMeshBruteForce(other, collisionBufferMM)
-}
-
-// collidesWithMeshBruteForce is the original O(n*m) collision check.
-func (m *Mesh) collidesWithMeshBruteForce(other *Mesh, collisionBufferMM float64) (bool, float64) {
-	// Transform all triangles to world space
-	worldTris1 := make([]*Triangle, len(m.triangles))
-	for i, tri := range m.triangles {
-		worldTris1[i] = tri.Transform(m.pose)
-	}
-	worldTris2 := make([]*Triangle, len(other.triangles))
-	for i, tri := range other.triangles {
-		worldTris2[i] = tri.Transform(other.pose)
-	}
-
-	minDist := math.Inf(1)
-	// Check if any triangles from either mesh collide.
-	// If two triangles intersect, then the segment between two vertices of one triangle intersects the other triangle.
-	for _, worldTri1 := range worldTris1 {
-		p1 := worldTri1.Points()
-
-		for _, worldTri2 := range worldTris2 {
-			p2 := worldTri2.Points()
-
-			// Check segments from tri1 against tri2
-			for i := 0; i < 3; i++ {
-				start := p1[i]
-				end := p1[(i+1)%3]
-				bestSegPt, bestTriPt := ClosestPointsSegmentTriangle(start, end, worldTri2)
-				dist := bestSegPt.Sub(bestTriPt).Norm()
-				if dist <= collisionBufferMM {
-					return true, -1
-				}
-				if dist < minDist {
-					minDist = dist
-				}
-			}
-
-			// Check segments from tri2 against tri1
-			for i := 0; i < 3; i++ {
-				start := p2[i]
-				end := p2[(i+1)%3]
-				bestSegPt, bestTriPt := ClosestPointsSegmentTriangle(start, end, worldTri1)
-				dist := bestSegPt.Sub(bestTriPt).Norm()
-				if dist <= collisionBufferMM {
-					return true, -1
-				}
-				if dist < minDist {
-					minDist = dist
-				}
-			}
-		}
-	}
-	return false, minDist
+	// All meshes have BVH, so use BVH acceleration
+	return bvhCollidesWithGeometry(m.bvh, m.pose, other, collisionBufferMM)
 }
 
 // distanceFromMesh returns the minimum distance between this mesh and another mesh.
-// Uses BVH acceleration when available.
+// Uses BVH acceleration.
 func (m *Mesh) distanceFromMesh(other *Mesh) float64 {
-	// Use BVH-accelerated distance if both meshes have BVH
-	if m.bvh != nil && other.bvh != nil {
-		return bvhDistanceFromBVH(m.bvh, other.bvh, m.pose, other.pose)
-	}
-
-	// Fallback to brute-force
-	return m.distanceFromMeshBruteForce(other)
-}
-
-// distanceFromMeshBruteForce is the original O(n*m) distance calculation.
-func (m *Mesh) distanceFromMeshBruteForce(other *Mesh) float64 {
-	// Transform all triangles to world space
-	worldTris1 := make([]*Triangle, len(m.triangles))
-	for i, tri := range m.triangles {
-		worldTris1[i] = tri.Transform(m.pose)
-	}
-
-	worldTris2 := make([]*Triangle, len(other.triangles))
-	for i, tri := range other.triangles {
-		worldTris2[i] = tri.Transform(other.pose)
-	}
-
-	minDist := math.Inf(1)
-	for _, worldTri1 := range worldTris1 {
-		p1 := worldTri1.Points()
-
-		for _, worldTri2 := range worldTris2 {
-			p2 := worldTri2.Points()
-
-			// Check segments from tri1 against tri2
-			for i := 0; i < 3; i++ {
-				start := p1[i]
-				end := p1[(i+1)%3]
-				bestSegPt, bestTriPt := ClosestPointsSegmentTriangle(start, end, worldTri2)
-				dist := bestSegPt.Sub(bestTriPt).Norm()
-				if dist < minDist {
-					minDist = dist
-				}
-			}
-
-			// Check segments from tri2 against tri1
-			for i := 0; i < 3; i++ {
-				start := p2[i]
-				end := p2[(i+1)%3]
-				bestSegPt, bestTriPt := ClosestPointsSegmentTriangle(start, end, worldTri1)
-				dist := bestSegPt.Sub(bestTriPt).Norm()
-				if dist < minDist {
-					minDist = dist
-				}
-			}
-		}
-	}
-	return minDist
+	// All meshes have BVH, so use BVH acceleration
+	return bvhDistanceFromGeometry(m.bvh, m.pose, other)
 }
 
 // SetLabel sets the name of the mesh.
