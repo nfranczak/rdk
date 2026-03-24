@@ -1,4 +1,4 @@
-module go.viam.com/rdk
+module github.com/nfranczak/rdk
 
 go 1.25.1
 
